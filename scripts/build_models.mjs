@@ -1,0 +1,639 @@
+import fs from 'node:fs'
+import path from 'node:path'
+
+const tempDir = process.env.TEMP || 'C:/Users/gusta/AppData/Local/Temp'
+const objPath = path.join(tempDir, 'mh_base.obj')
+const targetsDir = path.join(tempDir, 'mh_targets')
+const outDir = path.resolve('public/models')
+
+fs.mkdirSync(outDir, { recursive: true })
+
+console.log('[build_models] Reading MakeHuman CC0 base mesh...')
+const objText = fs.readFileSync(objPath, 'utf8')
+const lines = objText.split('\n')
+
+const rawPositions = [] // [x, y, z]
+const rawUVs = [] // [u, v]
+const bodyFaces = [] // array of [[vIdx, vtIdx], ...]
+const eyeFaces = [] // array of [[vIdx, vtIdx], ...]
+
+let currentGroup = ''
+for (let i = 0; i < lines.length; i++) {
+  const line = lines[i].trim()
+  if (!line || line.startsWith('#')) continue
+  if (line.startsWith('v ')) {
+    const parts = line.split(/\s+/)
+    rawPositions.push([Number(parts[1]), Number(parts[2]), Number(parts[3])])
+  } else if (line.startsWith('vt ')) {
+    const parts = line.split(/\s+/)
+    rawUVs.push([Number(parts[1]), 1.0 - Number(parts[2])])
+  } else if (line.startsWith('g ')) {
+    currentGroup = line.slice(2).trim()
+  } else if (line.startsWith('f ')) {
+    if (
+      currentGroup !== 'body' &&
+      currentGroup !== 'helper-l-eye' &&
+      currentGroup !== 'helper-r-eye'
+    ) {
+      continue
+    }
+    const parts = line.split(/\s+/).slice(1)
+    const face = parts.map((p) => {
+      const [vStr, vtStr] = p.split('/')
+      return [parseInt(vStr, 10) - 1, vtStr ? parseInt(vtStr, 10) - 1 : 0]
+    })
+    if (currentGroup === 'body') {
+      bodyFaces.push(face)
+    } else {
+      eyeFaces.push(face)
+    }
+  }
+}
+
+function loadTarget(filename) {
+  const fullPath = path.join(targetsDir, filename)
+  const map = new Map()
+  if (!fs.existsSync(fullPath)) {
+    console.warn(`[build_models] Warning: target not found: ${filename}`)
+    return map
+  }
+  const content = fs.readFileSync(fullPath, 'utf8').split('\n')
+  for (let i = 0; i < content.length; i++) {
+    const l = content[i].trim()
+    if (!l || l.startsWith('#')) continue
+    const parts = l.split(/\s+/)
+    if (parts.length >= 4) {
+      const idx = parseInt(parts[0], 10)
+      map.set(idx, [Number(parts[1]), Number(parts[2]), Number(parts[3])])
+    }
+  }
+  return map
+}
+
+function combineTargets(weightedTargets, scaleFactor = 0.106) {
+  const delta = new Float32Array(rawPositions.length * 3)
+  for (const { target, weight } of weightedTargets) {
+    for (const [idx, [dx, dy, dz]] of target.entries()) {
+      if (idx < rawPositions.length) {
+        const base = idx * 3
+        delta[base] += dx * weight * scaleFactor
+        delta[base + 1] += dy * weight * scaleFactor
+        delta[base + 2] += dz * weight * scaleFactor
+      }
+    }
+  }
+  return delta
+}
+
+const tMaleYoung = loadTarget('caucasian-male-young.target')
+const tFemaleYoung = loadTarget('caucasian-female-young.target')
+const tAsianFemaleYoung = loadTarget('asian-female-young.target')
+const tMaleMaxMuscle = loadTarget('universal-male-young-maxmuscle-averageweight.target')
+const tFemaleMinWeight = loadTarget('universal-female-young-minmuscle-minweight.target')
+
+const tShoulderIncr = loadTarget('measure-shoulder-dist-incr.target')
+const tShoulderDecr = loadTarget('measure-shoulder-dist-decr.target')
+const tChestIncr = loadTarget('measure-frontchest-dist-incr.target')
+const tChestDecr = loadTarget('measure-frontchest-dist-decr.target')
+const tWaistIncr = loadTarget('measure-waist-circ-incr.target')
+const tWaistDecr = loadTarget('measure-waist-circ-decr.target')
+const tUpperArmIncr = loadTarget('measure-upperarm-length-incr.target')
+const tUpperArmDecr = loadTarget('measure-upperarm-length-decr.target')
+const tLowerArmIncr = loadTarget('measure-lowerarm-length-incr.target')
+const tLowerArmDecr = loadTarget('measure-lowerarm-length-decr.target')
+const tUpperLegIncr = loadTarget('measure-upperleg-height-incr.target')
+const tUpperLegDecr = loadTarget('measure-upperleg-height-decr.target')
+const tLowerLegIncr = loadTarget('measure-lowerleg-height-incr.target')
+const tLowerLegDecr = loadTarget('measure-lowerleg-height-decr.target')
+
+const tHeadInvTri = loadTarget('head-invertedtriangular.target')
+const tHeadOval = loadTarget('head-oval.target')
+const tHeadScaleHoriz = loadTarget('head-scale-horiz-incr.target')
+const tHeadScaleVert = loadTarget('head-scale-vert-incr.target')
+const tChinTri = loadTarget('chin-triangle.target')
+const tChinWidthDecr = loadTarget('chin-width-decr.target')
+const tChinHeightDecr = loadTarget('chin-height-decr.target')
+const tNoseWidthDecr = loadTarget('nose-point-width-decr.target')
+const tNoseFlareDecr = loadTarget('nose-flaring-decr.target')
+const tLEyeScaleIncr = loadTarget('l-eye-scale-incr.target')
+const tREyeScaleIncr = loadTarget('r-eye-scale-incr.target')
+const tLEyeH1Incr = loadTarget('l-eye-height1-incr.target')
+const tREyeH1Incr = loadTarget('r-eye-height1-incr.target')
+const tLEyeH2Incr = loadTarget('l-eye-height2-incr.target')
+const tREyeH2Incr = loadTarget('r-eye-height2-incr.target')
+
+function computeRawSmoothNormals(positionsFlat, facesList) {
+  const normals = new Float32Array(rawPositions.length * 3)
+  for (const faces of facesList) {
+    for (const face of faces) {
+      const tris =
+        face.length === 4
+          ? [
+              [face[0][0], face[1][0], face[2][0]],
+              [face[0][0], face[2][0], face[3][0]],
+            ]
+          : [[face[0][0], face[1][0], face[2][0]]]
+      for (const [i0, i1, i2] of tris) {
+        const ax = positionsFlat[i0 * 3],
+          ay = positionsFlat[i0 * 3 + 1],
+          az = positionsFlat[i0 * 3 + 2]
+        const bx = positionsFlat[i1 * 3],
+          by = positionsFlat[i1 * 3 + 1],
+          bz = positionsFlat[i1 * 3 + 2]
+        const cx = positionsFlat[i2 * 3],
+          cy = positionsFlat[i2 * 3 + 1],
+          cz = positionsFlat[i2 * 3 + 2]
+        const ux = bx - ax,
+          uy = by - ay,
+          uz = bz - az
+        const vx = cx - ax,
+          vy = cy - ay,
+          vz = cz - az
+        const nx = uy * vz - uz * vy
+        const ny = uz * vx - ux * vz
+        const nz = ux * vy - uy * vx
+        for (const idx of [i0, i1, i2]) {
+          normals[idx * 3] += nx
+          normals[idx * 3 + 1] += ny
+          normals[idx * 3 + 2] += nz
+        }
+      }
+    }
+  }
+  for (let i = 0; i < rawPositions.length; i++) {
+    const nx = normals[i * 3],
+      ny = normals[i * 3 + 1],
+      nz = normals[i * 3 + 2]
+    const len = Math.hypot(nx, ny, nz) || 1
+    normals[i * 3] = nx / len
+    normals[i * 3 + 1] = ny / len
+    normals[i * 3 + 2] = nz / len
+  }
+  return normals
+}
+
+function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 0.106 }) {
+  const posFlat = new Float32Array(rawPositions.length * 3)
+  const baseDelta = combineTargets(baseWeights, scaleFactor)
+
+  for (let i = 0; i < rawPositions.length; i++) {
+    let x = rawPositions[i][0] * scaleFactor + baseDelta[i * 3]
+    let y = rawPositions[i][1] * scaleFactor + baseDelta[i * 3 + 1]
+    let z = rawPositions[i][2] * scaleFactor + baseDelta[i * 3 + 2]
+
+    if (isAnime) {
+      const neckY = 5.4 * scaleFactor
+      if (y > neckY) {
+        const t = Math.min(1, (y - neckY) / (1.2 * scaleFactor))
+        const headScale = 1 + 0.14 * t
+        x *= headScale
+        y = neckY + (y - neckY) * (1 + 0.11 * t)
+        z *= headScale
+      }
+    }
+
+    posFlat[i * 3] = x
+    posFlat[i * 3 + 1] = y
+    posFlat[i * 3 + 2] = z
+  }
+
+  let minX = Infinity,
+    maxX = -Infinity,
+    minY = Infinity,
+    maxY = -Infinity,
+    minZ = Infinity,
+    maxZ = -Infinity
+  for (const face of bodyFaces) {
+    for (const [vIdx] of face) {
+      const x = posFlat[vIdx * 3],
+        y = posFlat[vIdx * 3 + 1],
+        z = posFlat[vIdx * 3 + 2]
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+      if (z < minZ) minZ = z
+      if (z > maxZ) maxZ = z
+    }
+  }
+
+  const centerX = (minX + maxX) * 0.5
+  const centerZ = (minZ + maxZ) * 0.5
+  const offsetY = -minY
+
+  for (let i = 0; i < rawPositions.length; i++) {
+    posFlat[i * 3] -= centerX
+    posFlat[i * 3 + 1] += offsetY
+    posFlat[i * 3 + 2] -= centerZ
+  }
+
+  const rawNormals = computeRawSmoothNormals(posFlat, [bodyFaces, eyeFaces])
+
+  const morphDefs = [
+    {
+      name: 'shoulderWidthPlus',
+      delta: combineTargets([{ target: tShoulderIncr, weight: 1.5 }], scaleFactor),
+    },
+    {
+      name: 'shoulderWidthMinus',
+      delta: combineTargets([{ target: tShoulderDecr, weight: 1.5 }], scaleFactor),
+    },
+    {
+      name: 'torsoWidthPlus',
+      delta: combineTargets(
+        [
+          { target: tChestIncr, weight: 1.4 },
+          { target: tWaistIncr, weight: 1.4 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'torsoWidthMinus',
+      delta: combineTargets(
+        [
+          { target: tChestDecr, weight: 1.4 },
+          { target: tWaistDecr, weight: 1.4 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'armLengthPlus',
+      delta: combineTargets(
+        [
+          { target: tUpperArmIncr, weight: 1.5 },
+          { target: tLowerArmIncr, weight: 1.5 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'armLengthMinus',
+      delta: combineTargets(
+        [
+          { target: tUpperArmDecr, weight: 1.5 },
+          { target: tLowerArmDecr, weight: 1.5 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'legLengthPlus',
+      delta: combineTargets(
+        [
+          { target: tUpperLegIncr, weight: 1.5 },
+          { target: tLowerLegIncr, weight: 1.5 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'legLengthMinus',
+      delta: combineTargets(
+        [
+          { target: tUpperLegDecr, weight: 1.5 },
+          { target: tLowerLegDecr, weight: 1.5 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'muscleTone',
+      delta: combineTargets([{ target: tMaleMaxMuscle, weight: 0.9 }], scaleFactor),
+    },
+  ]
+
+  // Compute eye centers for clean planar UV projection so procedural iris/pupil maps cleanly
+  const leftEyeVerts = new Set()
+  const rightEyeVerts = new Set()
+  for (const face of eyeFaces) {
+    for (const [vIdx] of face) {
+      if (posFlat[vIdx * 3] >= 0) leftEyeVerts.add(vIdx)
+      else rightEyeVerts.add(vIdx)
+    }
+  }
+  function getEyeBounds(vertSet) {
+    let exMin = Infinity,
+      exMax = -Infinity,
+      eyMin = Infinity,
+      eyMax = -Infinity
+    for (const vIdx of vertSet) {
+      const x = posFlat[vIdx * 3],
+        y = posFlat[vIdx * 3 + 1]
+      if (x < exMin) exMin = x
+      if (x > exMax) exMax = x
+      if (y < eyMin) eyMin = y
+      if (y > eyMax) eyMax = y
+    }
+    return {
+      cx: (exMin + exMax) * 0.5,
+      cy: (eyMin + eyMax) * 0.5,
+      rx: Math.max(0.001, (exMax - exMin) * 0.5),
+      ry: Math.max(0.001, (eyMax - eyMin) * 0.5),
+    }
+  }
+  const lEyeBounds = getEyeBounds(leftEyeVerts)
+  const rEyeBounds = getEyeBounds(rightEyeVerts)
+
+  function compileSubmesh(faces, isEyeMesh = false) {
+    const vertexMap = new Map()
+    const outPositions = []
+    const outNormals = []
+    const outUVs = []
+    const outRawIndices = []
+    const indices = []
+
+    function getVertexIndex(vIdx, vtIdx) {
+      const key = `${vIdx}_${vtIdx}`
+      let existing = vertexMap.get(key)
+      if (existing !== undefined) return existing
+      const newIdx = outRawIndices.length
+      vertexMap.set(key, newIdx)
+      outRawIndices.push(vIdx)
+      const px = posFlat[vIdx * 3],
+        py = posFlat[vIdx * 3 + 1],
+        pz = posFlat[vIdx * 3 + 2]
+      outPositions.push(px, py, pz)
+      outNormals.push(rawNormals[vIdx * 3], rawNormals[vIdx * 3 + 1], rawNormals[vIdx * 3 + 2])
+      if (isEyeMesh) {
+        const b = px >= 0 ? lEyeBounds : rEyeBounds
+        const u = 0.5 + ((px - b.cx) / b.rx) * 0.48
+        const v = 0.5 + ((py - b.cy) / b.ry) * 0.48
+        outUVs.push(u, v)
+      } else {
+        const uv = rawUVs[vtIdx] || [0, 0]
+        outUVs.push(uv[0], uv[1])
+      }
+      return newIdx
+    }
+
+    for (const face of faces) {
+      if (face.length === 4) {
+        const i0 = getVertexIndex(face[0][0], face[0][1])
+        const i1 = getVertexIndex(face[1][0], face[1][1])
+        const i2 = getVertexIndex(face[2][0], face[2][1])
+        const i3 = getVertexIndex(face[3][0], face[3][1])
+        indices.push(i0, i1, i2, i0, i2, i3)
+      } else if (face.length === 3) {
+        const i0 = getVertexIndex(face[0][0], face[0][1])
+        const i1 = getVertexIndex(face[1][0], face[1][1])
+        const i2 = getVertexIndex(face[2][0], face[2][1])
+        indices.push(i0, i1, i2)
+      }
+    }
+
+    const morphTargets = morphDefs.map((m) => {
+      const arr = new Float32Array(outRawIndices.length * 3)
+      for (let i = 0; i < outRawIndices.length; i++) {
+        const rIdx = outRawIndices[i]
+        arr[i * 3] = m.delta[rIdx * 3]
+        arr[i * 3 + 1] = m.delta[rIdx * 3 + 1]
+        arr[i * 3 + 2] = m.delta[rIdx * 3 + 2]
+      }
+      return { name: m.name, data: arr }
+    })
+
+    return {
+      positions: new Float32Array(outPositions),
+      normals: new Float32Array(outNormals),
+      uvs: new Float32Array(outUVs),
+      indices: new Uint32Array(indices),
+      morphTargets,
+    }
+  }
+
+  const bodyMesh = compileSubmesh(bodyFaces, false)
+  const eyeMesh = compileSubmesh(eyeFaces, true)
+
+  const bufferChunks = []
+  const bufferViews = []
+  const accessors = []
+  let byteOffset = 0
+
+  function appendBuffer(typedArray, target) {
+    const buf = Buffer.from(typedArray.buffer, typedArray.byteOffset, typedArray.byteLength)
+    const pad = (4 - (buf.length % 4)) % 4
+    const viewIndex = bufferViews.length
+    bufferViews.push({
+      buffer: 0,
+      byteOffset,
+      byteLength: buf.length,
+      ...(target ? { target } : {}),
+    })
+    bufferChunks.push(buf)
+    if (pad > 0) bufferChunks.push(Buffer.alloc(pad))
+    byteOffset += buf.length + pad
+    return viewIndex
+  }
+
+  function addVec3Accessor(float32Array, target = 34962) {
+    let min = [Infinity, Infinity, Infinity]
+    let max = [-Infinity, -Infinity, -Infinity]
+    for (let i = 0; i < float32Array.length; i += 3) {
+      const x = float32Array[i],
+        y = float32Array[i + 1],
+        z = float32Array[i + 2]
+      if (x < min[0]) min[0] = x
+      if (y < min[1]) min[1] = y
+      if (z < min[2]) min[2] = z
+      if (x > max[0]) max[0] = x
+      if (y > max[1]) max[1] = y
+      if (z > max[2]) max[2] = z
+    }
+    const bv = appendBuffer(float32Array, target)
+    const accIdx = accessors.length
+    accessors.push({
+      bufferView: bv,
+      byteOffset: 0,
+      componentType: 5126,
+      count: float32Array.length / 3,
+      type: 'VEC3',
+      min,
+      max,
+    })
+    return accIdx
+  }
+
+  function addVec2Accessor(float32Array) {
+    const bv = appendBuffer(float32Array, 34962)
+    const accIdx = accessors.length
+    accessors.push({
+      bufferView: bv,
+      byteOffset: 0,
+      componentType: 5126,
+      count: float32Array.length / 2,
+      type: 'VEC2',
+    })
+    return accIdx
+  }
+
+  function addIndexAccessor(uint32Array) {
+    const bv = appendBuffer(uint32Array, 34963)
+    const accIdx = accessors.length
+    accessors.push({
+      bufferView: bv,
+      byteOffset: 0,
+      componentType: 5125,
+      count: uint32Array.length,
+      type: 'SCALAR',
+    })
+    return accIdx
+  }
+
+  function buildPrimitive(compiled, materialIndex) {
+    const posAcc = addVec3Accessor(compiled.positions)
+    const normAcc = addVec3Accessor(compiled.normals)
+    const uvAcc = addVec2Accessor(compiled.uvs)
+    const idxAcc = addIndexAccessor(compiled.indices)
+    const targets = compiled.morphTargets.map((m) => ({
+      POSITION: addVec3Accessor(m.data, 34962),
+    }))
+    return {
+      attributes: {
+        POSITION: posAcc,
+        NORMAL: normAcc,
+        TEXCOORD_0: uvAcc,
+      },
+      indices: idxAcc,
+      material: materialIndex,
+      mode: 4,
+      targets,
+    }
+  }
+
+  const bodyPrim = buildPrimitive(bodyMesh, 0)
+  const eyePrim = buildPrimitive(eyeMesh, 1)
+  const targetNames = morphDefs.map((m) => m.name)
+
+  const gltfJson = {
+    asset: {
+      version: '2.0',
+      generator: 'Character Forge Anatomical Builder (MakeHuman CC0 hm08)',
+      copyright: 'CC0 1.0 Universal (Public Domain) - MakeHuman Community Base Mesh',
+    },
+    scene: 0,
+    scenes: [{ name: 'CharacterScene', nodes: [0] }],
+    nodes: [
+      {
+        name: 'CharacterRoot',
+        children: [1, 2],
+      },
+      {
+        name: 'HumanBody',
+        mesh: 0,
+      },
+      {
+        name: 'HumanEyes',
+        mesh: 1,
+      },
+    ],
+    materials: [
+      {
+        name: 'SkinMaterial',
+        pbrMetallicRoughness: {
+          baseColorFactor: isAnime ? [0.95, 0.82, 0.74, 1.0] : [0.82, 0.65, 0.54, 1.0],
+          metallicFactor: 0.02,
+          roughnessFactor: isAnime ? 0.65 : 0.42,
+        },
+        doubleSided: true,
+      },
+      {
+        name: 'EyeMaterial',
+        pbrMetallicRoughness: {
+          baseColorFactor: [0.98, 0.98, 1.0, 1.0],
+          metallicFactor: 0.0,
+          roughnessFactor: 0.05,
+        },
+        doubleSided: true,
+      },
+    ],
+    meshes: [
+      {
+        name: 'HumanBodyMesh',
+        primitives: [bodyPrim],
+        weights: new Array(targetNames.length).fill(0),
+        extras: { targetNames },
+      },
+      {
+        name: 'HumanEyesMesh',
+        primitives: [eyePrim],
+        weights: new Array(targetNames.length).fill(0),
+        extras: { targetNames },
+      },
+    ],
+    accessors,
+    bufferViews,
+    buffers: [{ byteLength: byteOffset }],
+  }
+
+  const jsonBuffer = Buffer.from(JSON.stringify(gltfJson), 'utf8')
+  const jsonPad = (4 - (jsonBuffer.length % 4)) % 4
+  const jsonChunkLen = jsonBuffer.length + jsonPad
+  const binBuffer = Buffer.concat(bufferChunks)
+  const totalLength = 12 + 8 + jsonChunkLen + 8 + binBuffer.length
+
+  const header = Buffer.alloc(12)
+  header.writeUInt32LE(0x46546c67, 0)
+  header.writeUInt32LE(2, 4)
+  header.writeUInt32LE(totalLength, 8)
+
+  const jsonHeader = Buffer.alloc(8)
+  jsonHeader.writeUInt32LE(jsonChunkLen, 0)
+  jsonHeader.writeUInt32LE(0x4e4f534a, 4)
+
+  const binHeader = Buffer.alloc(8)
+  binHeader.writeUInt32LE(binBuffer.length, 0)
+  binHeader.writeUInt32LE(0x004e4942, 4)
+
+  const glbBuffer = Buffer.concat([
+    header,
+    jsonHeader,
+    jsonBuffer,
+    Buffer.alloc(jsonPad, 0x20),
+    binHeader,
+    binBuffer,
+  ])
+
+  const outPath = path.join(outDir, outputFilename)
+  fs.writeFileSync(outPath, glbBuffer)
+  console.log(
+    `[build_models] Wrote ${outputFilename} (${(glbBuffer.length / 1024 / 1024).toFixed(2)} MB)`
+  )
+}
+
+buildGLB({
+  outputFilename: 'personagem_humano_realista.glb',
+  baseWeights: [
+    { target: tMaleYoung, weight: 0.62 },
+    { target: tFemaleYoung, weight: 0.38 },
+    { target: tMaleMaxMuscle, weight: 0.32 },
+  ],
+  isAnime: false,
+  scaleFactor: 0.106,
+})
+
+buildGLB({
+  outputFilename: 'personagem_humano_anime.glb',
+  baseWeights: [
+    { target: tAsianFemaleYoung, weight: 0.75 },
+    { target: tFemaleMinWeight, weight: 0.35 },
+    { target: tHeadInvTri, weight: 0.65 },
+    { target: tHeadOval, weight: 0.45 },
+    { target: tHeadScaleHoriz, weight: 0.5 },
+    { target: tHeadScaleVert, weight: 0.4 },
+    { target: tChinTri, weight: 0.9 },
+    { target: tChinWidthDecr, weight: 0.85 },
+    { target: tChinHeightDecr, weight: 0.55 },
+    { target: tNoseWidthDecr, weight: 0.85 },
+    { target: tNoseFlareDecr, weight: 0.75 },
+    { target: tLEyeScaleIncr, weight: 2.2 },
+    { target: tREyeScaleIncr, weight: 2.2 },
+    { target: tLEyeH1Incr, weight: 1.8 },
+    { target: tREyeH1Incr, weight: 1.8 },
+    { target: tLEyeH2Incr, weight: 1.6 },
+    { target: tREyeH2Incr, weight: 1.6 },
+  ],
+  isAnime: true,
+  scaleFactor: 0.102,
+})

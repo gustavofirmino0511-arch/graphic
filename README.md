@@ -1,97 +1,60 @@
-# Character Forge — 3D Character Creator
+# Character Forge — 3D Character Creator & Modeler
 
-Professional web application for creating and modeling 3D characters.
+Aplicativo web profissional para criação, visualização e modelagem de personagens 3D, desenvolvido com **React 18**, **TypeScript**, **Vite**, **Three.js** e **React Three Fiber**.
 
-## 🚀 Quick Start
+## 🚀 Como Executar
 
 ```bash
-# Install dependencies
+# 1. Entrar na pasta do projeto
+cd character-forge
+
+# 2. Instalar dependências
 npm install
 
-# Start development server
+# 3. Iniciar servidor de desenvolvimento
 npm run dev
 
-# Build for production
+# 4. Gerar build de produção
 npm run build
-
-# Preview production build
-npm run preview
 ```
 
-## 🛠 Tech Stack
-
-- **React 18** — UI framework
-- **TypeScript** — Type safety
-- **Vite** — Build tool & dev server
-- **Three.js** — 3D rendering engine
-- **React Three Fiber** — React renderer for Three.js
-- **@react-three/drei** — Useful helpers for R3F
-
-## 📁 Project Structure
-
-```
-character-forge/
-├── public/
-│   ├── models/
-│   │   └── personagem_base_humano.glb   # Base character model
-│   └── favicon.svg
-├── src/
-│   ├── components/
-│   │   ├── Header.tsx          # Top navigation bar
-│   │   ├── Toolbar.tsx         # Left tools sidebar
-│   │   ├── Viewport.tsx        # 3D viewport with model
-│   │   ├── PropertiesPanel.tsx # Right properties panel
-│   │   └── StatusBar.tsx       # Bottom status bar
-│   ├── styles/
-│   │   └── global.css          # Global styles
-│   ├── App.tsx                 # Main application component
-│   └── main.tsx                # Entry point
-├── index.html
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
+Para regenerar os modelos 3D a partir da malha base e morph targets do MakeHuman (caso deseje customizar o pipeline de geração):
+```bash
+node scripts/build_models.mjs
 ```
 
-## 🎮 Viewport Controls
+## 🧍 Modelos 3D e Licenças
 
-| Action  | Mouse          | Touch          |
-| ------- | -------------- | -------------- |
-| Rotate  | Left click     | One finger     |
-| Pan     | Right click    | Two fingers    |
-| Zoom    | Scroll wheel   | Pinch          |
+1. **`public/models/personagem_humano_realista.glb`** *(Padrão — Realista HD)*
+   - **Origem**: Malha humana canônica `hm08` do projeto **MakeHuman** combinada com *morph targets* anatômicos oficiais (`macrodetails` e `measure`).
+   - **Licença**: **CC0 1.0 Universal (Domínio Público)**.
+   - **Características**: 14.677 vértices e 27.036 triângulos (malha do corpo 100% fechada/manifold + globos oculares dedicados), rosto esculpido (olhos, pálpebras, nariz com narinas, boca, orelhas), mãos com os 5 dedos e polegares individualizados, pés anatômicos com os 5 dedos, articulações definidas e **9 Shape Keys (Morph Targets)** embutidos para ajuste de proporções em tempo real.
 
-## 🌐 Deploy
+2. **`public/models/personagem_humano_anime.glb`** *(Estilo Anime HD)*
+   - **Origem**: Derivado da topologia `hm08` MakeHuman com *morph targets* de estilização Anime (rosto afilado em V, olhos ampliados e expressivos, traços faciais delicados e silhueta esguia) + sombreamento Cel/Toon dedicado.
+   - **Licença**: **CC0 1.0 Universal (Domínio Público)**.
 
-### Render (Static Site)
+3. **`public/models/personagem_base_humano.glb`** *(Protótipo Inicial)*
+   - **Origem**: Arquivo original do diretório do projeto preservado integralmente, com correção automática da orientação de eixos (conversão Z-up para Y-up) para ficar em pé com os pés apoiados no piso (`Y = 0`).
 
-1. Push to GitHub
-2. Create a new **Static Site** on [Render](https://render.com)
-3. Set **Build Command**: `npm install && npm run build`
-4. Set **Publish Directory**: `dist`
+## 🛠 Funcionalidades Implementadas
 
-### Vercel / Netlify
-
-1. Connect your GitHub repo
-2. Framework: **Vite**
-3. Build command: `npm run build`
-4. Output directory: `dist`
-
-## 📋 Roadmap
-
-- [x] Load and display GLB character model
-- [x] Orbital camera controls (rotate, pan, zoom)
-- [x] Professional UI with toolbar and properties panel
-- [x] Responsive design (desktop + mobile)
-- [x] Wireframe toggle
-- [x] Grid toggle
-- [ ] Body proportion controls
-- [ ] Facial parameters
-- [ ] Skin tone selector
-- [ ] Hair and clothing components
-- [ ] Realistic / Anime style toggle
-- [ ] Save / Load project
-- [ ] GLB export
-
-## 📝 License
-
-MIT
+- **Visualização e Câmera**:
+  - 7 ângulos de câmera predefinidos e calibrados: **Corpo Inteiro**, **Frente**, **Costas**, **Perfil Esquerdo**, **Perfil Direito**, **Visão Superior** e **Aproximar Rosto**.
+  - Rotação contínua (**Turntable**), modo **Wireframe** e **Grade do Piso**.
+- **Materiais e Aparência**:
+  - Alternância imediata entre os estilos **Realista HD**, **Anime HD** e **Protótipo**.
+  - Seleção de tons de pele (com sombreamento físico dérmico no estilo Realista e Cel/Toon no estilo Anime) e cor da íris dos olhos (textura procedural de alta resolução com esclera, anel límbico, fibras radiais, pupila e reflexo corneano).
+- **Proporções Corporais Reais (Shape Keys / Morph Targets)**:
+  - **Altura Total** (`1,45 m` a `2,10 m`) mantendo os pés apoiados no piso (`Y = 0`).
+  - **Largura dos Ombros** (`-100%` a `+100%`).
+  - **Largura do Tronco / Tórax** (`-100%` a `+100%`).
+  - **Comprimento dos Braços** (`-100%` a `+100%`).
+  - **Comprimento das Pernas** (`-100%` a `+100%`).
+  - **Definição Muscular** (`0%` a `100%`).
+- **Ferramentas de Edição e Transformação 3D**:
+  - **Selecionar (`Q`)**: Seleção do personagem por clique com indicador luminoso na base.
+  - **Mover (`W`)**: Gizmo 3D interativo nos eixos X, Y e Z + entradas numéricas.
+  - **Rotacionar (`E`)**: Gizmo 3D de rotação nos eixos X, Y e Z independente da câmera + entradas em graus (`°`).
+  - **Escalar (`R`)**: Gizmo 3D de escala + modo **Uniforme** ou **Independente por Eixo (X, Y, Z)**.
+  - **Medir (`M`)**: Régua 3D ponto-a-ponto na superfície da malha exibindo a distância exata em metros (`m`) e centímetros (`cm`).
