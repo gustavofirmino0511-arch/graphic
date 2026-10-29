@@ -16,6 +16,7 @@ const rawPositions = [] // [x, y, z]
 const rawUVs = [] // [u, v]
 const bodyFaces = [] // array of [[vIdx, vtIdx], ...]
 const eyeFaces = [] // array of [[vIdx, vtIdx], ...]
+const jointVertexGroups = new Map() // groupName -> Set<vIdx>
 
 let currentGroup = ''
 for (let i = 0; i < lines.length; i++) {
@@ -30,6 +31,17 @@ for (let i = 0; i < lines.length; i++) {
   } else if (line.startsWith('g ')) {
     currentGroup = line.slice(2).trim()
   } else if (line.startsWith('f ')) {
+    const parts = line.split(/\s+/).slice(1)
+    if (currentGroup.startsWith('joint-')) {
+      if (!jointVertexGroups.has(currentGroup)) {
+        jointVertexGroups.set(currentGroup, new Set())
+      }
+      const jSet = jointVertexGroups.get(currentGroup)
+      for (const p of parts) {
+        jSet.add(parseInt(p.split('/')[0], 10) - 1)
+      }
+      continue
+    }
     if (
       currentGroup !== 'body' &&
       currentGroup !== 'helper-l-eye' &&
@@ -37,7 +49,6 @@ for (let i = 0; i < lines.length; i++) {
     ) {
       continue
     }
-    const parts = line.split(/\s+/).slice(1)
     const face = parts.map((p) => {
       const [vStr, vtStr] = p.split('/')
       return [parseInt(vStr, 10) - 1, vtStr ? parseInt(vtStr, 10) - 1 : 0]
@@ -77,7 +88,7 @@ function combineTargets(weightedTargets, scaleFactor = 0.106) {
       if (idx < rawPositions.length) {
         const base = idx * 3
         delta[base] += dx * weight * scaleFactor
-        delta[base + 1] += dy * weight * scaleFactor
+        delta[base + 1] += dy * weight * weightYScale(weight) * scaleFactor
         delta[base + 2] += dz * weight * scaleFactor
       }
     }
@@ -85,16 +96,28 @@ function combineTargets(weightedTargets, scaleFactor = 0.106) {
   return delta
 }
 
+function weightYScale(_w) {
+  return 1.0
+}
+
+// Base & Macro Targets
 const tMaleYoung = loadTarget('caucasian-male-young.target')
 const tFemaleYoung = loadTarget('caucasian-female-young.target')
 const tAsianFemaleYoung = loadTarget('asian-female-young.target')
 const tMaleMaxMuscle = loadTarget('universal-male-young-maxmuscle-averageweight.target')
 const tFemaleMinWeight = loadTarget('universal-female-young-minmuscle-minweight.target')
 
+// Body Proportions & Volume Targets
 const tShoulderIncr = loadTarget('measure-shoulder-dist-incr.target')
 const tShoulderDecr = loadTarget('measure-shoulder-dist-decr.target')
+const tVShapeIncr = loadTarget('torso-vshape-incr.target')
+const tVShapeDecr = loadTarget('torso-vshape-decr.target')
 const tChestIncr = loadTarget('measure-frontchest-dist-incr.target')
 const tChestDecr = loadTarget('measure-frontchest-dist-decr.target')
+const tPectoralIncr = loadTarget('torso-muscle-pectoral-incr.target')
+const tPectoralDecr = loadTarget('torso-muscle-pectoral-decr.target')
+const tBustIncr = loadTarget('measure-bust-circ-incr.target')
+const tBustDecr = loadTarget('measure-bust-circ-decr.target')
 const tWaistIncr = loadTarget('measure-waist-circ-incr.target')
 const tWaistDecr = loadTarget('measure-waist-circ-decr.target')
 const tUpperArmIncr = loadTarget('measure-upperarm-length-incr.target')
@@ -123,13 +146,39 @@ const tAnkleCircDecr = loadTarget('measure-ankle-circ-decr.target')
 const tHipsCircIncr = loadTarget('measure-hips-circ-incr.target')
 const tHipsCircDecr = loadTarget('measure-hips-circ-decr.target')
 
+// Facial Targets (Cheeks, Cheekbones, Jaw, Chin, Face Width, Head Scale)
+const tLCheekVolIncr = loadTarget('l-cheek-volume-incr.target')
+const tLCheekVolDecr = loadTarget('l-cheek-volume-decr.target')
+const tRCheekVolIncr = loadTarget('r-cheek-volume-incr.target')
+const tRCheekVolDecr = loadTarget('r-cheek-volume-decr.target')
+const tLCheekInnerIncr = loadTarget('l-cheek-inner-incr.target')
+const tLCheekInnerDecr = loadTarget('l-cheek-inner-decr.target')
+const tRCheekInnerIncr = loadTarget('r-cheek-inner-incr.target')
+const tRCheekInnerDecr = loadTarget('r-cheek-inner-decr.target')
+const tLCheekBonesIncr = loadTarget('l-cheek-bones-incr.target')
+const tLCheekBonesDecr = loadTarget('l-cheek-bones-decr.target')
+const tRCheekBonesIncr = loadTarget('r-cheek-bones-incr.target')
+const tRCheekBonesDecr = loadTarget('r-cheek-bones-decr.target')
+
 const tHeadInvTri = loadTarget('head-invertedtriangular.target')
 const tHeadOval = loadTarget('head-oval.target')
-const tHeadScaleHoriz = loadTarget('head-scale-horiz-incr.target')
-const tHeadScaleVert = loadTarget('head-scale-vert-incr.target')
+const tHeadScaleHorizIncr = loadTarget('head-scale-horiz-incr.target')
+const tHeadScaleHorizDecr = loadTarget('head-scale-horiz-decr.target')
+const tHeadScaleVertIncr = loadTarget('head-scale-vert-incr.target')
+const tHeadScaleVertDecr = loadTarget('head-scale-vert-decr.target')
+const tHeadFatIncr = loadTarget('head-fat-incr.target')
+const tHeadFatDecr = loadTarget('head-fat-decr.target')
+
 const tChinTri = loadTarget('chin-triangle.target')
+const tChinWidthIncr = loadTarget('chin-width-incr.target')
 const tChinWidthDecr = loadTarget('chin-width-decr.target')
+const tChinBonesIncr = loadTarget('chin-bones-incr.target')
+const tChinBonesDecr = loadTarget('chin-bones-decr.target')
+const tChinHeightIncr = loadTarget('chin-height-incr.target')
 const tChinHeightDecr = loadTarget('chin-height-decr.target')
+const tChinProminentIncr = loadTarget('chin-prominent-incr.target')
+const tChinProminentDecr = loadTarget('chin-prominent-decr.target')
+
 const tNoseWidthDecr = loadTarget('nose-point-width-decr.target')
 const tNoseFlareDecr = loadTarget('nose-flaring-decr.target')
 const tLEyeScaleIncr = loadTarget('l-eye-scale-incr.target')
@@ -189,6 +238,29 @@ function computeRawSmoothNormals(positionsFlat, facesList) {
   return normals
 }
 
+const SKELETON_JOINTS_DEF = [
+  { id: 'pelvis', group: 'joint-pelvis', parent: null, label: 'Pelve (Raiz)' },
+  { id: 'spine3', group: 'joint-spine-3', parent: 'pelvis', label: 'Coluna Lombar' },
+  { id: 'spine2', group: 'joint-spine-2', parent: 'spine3', label: 'Coluna Torácica' },
+  { id: 'spine1', group: 'joint-spine-1', parent: 'spine2', label: 'Peito / Tórax Superior' },
+  { id: 'neck', group: 'joint-neck', parent: 'spine1', label: 'Pescoço' },
+  { id: 'head', group: 'joint-head', parent: 'neck', label: 'Cabeça' },
+  { id: 'clavicle_l', group: 'joint-l-clavicle', parent: 'spine1', label: 'Clavícula Esq.' },
+  { id: 'shoulder_l', group: 'joint-l-shoulder', parent: 'clavicle_l', label: 'Ombro Esq.' },
+  { id: 'elbow_l', group: 'joint-l-elbow', parent: 'shoulder_l', label: 'Cotovelo Esq.' },
+  { id: 'hand_l', group: 'joint-l-hand', parent: 'elbow_l', label: 'Punho / Mão Esq.' },
+  { id: 'clavicle_r', group: 'joint-r-clavicle', parent: 'spine1', label: 'Clavícula Dir.' },
+  { id: 'shoulder_r', group: 'joint-r-shoulder', parent: 'clavicle_r', label: 'Ombro Dir.' },
+  { id: 'elbow_r', group: 'joint-r-elbow', parent: 'shoulder_r', label: 'Cotovelo Dir.' },
+  { id: 'hand_r', group: 'joint-r-hand', parent: 'elbow_r', label: 'Punho / Mão Dir.' },
+  { id: 'thigh_l', group: 'joint-l-upper-leg', parent: 'pelvis', label: 'Quadril / Coxa Esq.' },
+  { id: 'knee_l', group: 'joint-l-knee', parent: 'thigh_l', label: 'Joelho Esq.' },
+  { id: 'ankle_l', group: 'joint-l-ankle', parent: 'knee_l', label: 'Tornozelo Esq.' },
+  { id: 'thigh_r', group: 'joint-r-upper-leg', parent: 'pelvis', label: 'Quadril / Coxa Dir.' },
+  { id: 'knee_r', group: 'joint-r-knee', parent: 'thigh_r', label: 'Joelho Dir.' },
+  { id: 'ankle_r', group: 'joint-r-ankle', parent: 'knee_r', label: 'Tornozelo Dir.' },
+]
+
 function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 0.106 }) {
   const posFlat = new Float32Array(rawPositions.length * 3)
   const baseDelta = combineTargets(baseWeights, scaleFactor)
@@ -246,21 +318,107 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
 
   const rawNormals = computeRawSmoothNormals(posFlat, [bodyFaces, eyeFaces])
 
+  // Extract anatomical joint positions in final aligned meter space
+  const anatomicalJoints = SKELETON_JOINTS_DEF.map((jDef) => {
+    const vSet = jointVertexGroups.get(jDef.group)
+    let cx = 0,
+      cy = 0,
+      cz = 0
+    if (vSet && vSet.size > 0) {
+      for (const vi of vSet) {
+        cx += posFlat[vi * 3]
+        cy += posFlat[vi * 3 + 1]
+        cz += posFlat[vi * 3 + 2]
+      }
+      cx /= vSet.size
+      cy /= vSet.size
+      cz /= vSet.size
+    }
+    return {
+      id: jDef.id,
+      parent: jDef.parent,
+      label: jDef.label,
+      position: [Number(cx.toFixed(4)), Number(cy.toFixed(4)), Number(cz.toFixed(4))],
+    }
+  })
+
+  // Eye vertex sets for planar UV mapping and rigid eye-socket tracking
+  const leftEyeVerts = new Set()
+  const rightEyeVerts = new Set()
+  for (const face of eyeFaces) {
+    for (const [vIdx] of face) {
+      if (posFlat[vIdx * 3] >= 0) leftEyeVerts.add(vIdx)
+      else rightEyeVerts.add(vIdx)
+    }
+  }
+
+  // Zero out any accidental eye vertex offsets in facial morph targets that shouldn't deform eyeballs
+  function zeroEyeOffsets(deltaArray) {
+    for (const vIdx of leftEyeVerts) {
+      deltaArray[vIdx * 3] = 0
+      deltaArray[vIdx * 3 + 1] = 0
+      deltaArray[vIdx * 3 + 2] = 0
+    }
+    for (const vIdx of rightEyeVerts) {
+      deltaArray[vIdx * 3] = 0
+      deltaArray[vIdx * 3 + 1] = 0
+      deltaArray[vIdx * 3 + 2] = 0
+    }
+    return deltaArray
+  }
+
+  // Rigidly translate eye vertices by the average translation of each eye center so eyeballs never distort or pop out
+  function rigidifyEyeOffsets(deltaArray) {
+    for (const eyeSet of [leftEyeVerts, rightEyeVerts]) {
+      let dx = 0,
+        dy = 0,
+        dz = 0
+      for (const vIdx of eyeSet) {
+        dx += deltaArray[vIdx * 3]
+        dy += deltaArray[vIdx * 3 + 1]
+        dz += deltaArray[vIdx * 3 + 2]
+      }
+      const n = eyeSet.size || 1
+      dx /= n
+      dy /= n
+      dz /= n
+      for (const vIdx of eyeSet) {
+        deltaArray[vIdx * 3] = dx
+        deltaArray[vIdx * 3 + 1] = dy
+        deltaArray[vIdx * 3 + 2] = dz
+      }
+    }
+    return deltaArray
+  }
+
   const morphDefs = [
+    // --- BODY MORPH TARGETS ---
     {
       name: 'shoulderWidthPlus',
-      delta: combineTargets([{ target: tShoulderIncr, weight: 1.5 }], scaleFactor),
+      delta: combineTargets(
+        [
+          { target: tShoulderIncr, weight: 1.45 },
+          { target: tVShapeIncr, weight: 0.45 },
+        ],
+        scaleFactor
+      ),
     },
     {
       name: 'shoulderWidthMinus',
-      delta: combineTargets([{ target: tShoulderDecr, weight: 1.5 }], scaleFactor),
+      delta: combineTargets(
+        [
+          { target: tShoulderDecr, weight: 1.45 },
+          { target: tVShapeDecr, weight: 0.35 },
+        ],
+        scaleFactor
+      ),
     },
     {
       name: 'torsoWidthPlus',
       delta: combineTargets(
         [
-          { target: tChestIncr, weight: 1.4 },
-          { target: tWaistIncr, weight: 1.4 },
+          { target: tChestIncr, weight: 1.35 },
+          { target: tWaistIncr, weight: 1.35 },
         ],
         scaleFactor
       ),
@@ -269,8 +427,30 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
       name: 'torsoWidthMinus',
       delta: combineTargets(
         [
-          { target: tChestDecr, weight: 1.4 },
-          { target: tWaistDecr, weight: 1.4 },
+          { target: tChestDecr, weight: 1.35 },
+          { target: tWaistDecr, weight: 1.35 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'chestVolumePlus',
+      delta: combineTargets(
+        [
+          { target: tPectoralIncr, weight: 1.35 },
+          { target: tBustIncr, weight: 1.1 },
+          { target: tChestIncr, weight: 0.6 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'chestVolumeMinus',
+      delta: combineTargets(
+        [
+          { target: tPectoralDecr, weight: 1.1 },
+          { target: tBustDecr, weight: 1.1 },
+          { target: tChestDecr, weight: 0.6 },
         ],
         scaleFactor
       ),
@@ -401,33 +581,183 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
       name: 'muscleTone',
       delta: combineTargets([{ target: tMaleMaxMuscle, weight: 0.9 }], scaleFactor),
     },
+
+    // --- FACIAL PROPORTION MORPH TARGETS (Item 3 — Eye-Safe!) ---
+    {
+      name: 'cheekVolumePlus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tLCheekVolIncr, weight: 1.5 },
+            { target: tRCheekVolIncr, weight: 1.5 },
+            { target: tLCheekInnerIncr, weight: 1.1 },
+            { target: tRCheekInnerIncr, weight: 1.1 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'cheekVolumeMinus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tLCheekVolDecr, weight: 1.5 },
+            { target: tRCheekVolDecr, weight: 1.5 },
+            { target: tLCheekInnerDecr, weight: 1.1 },
+            { target: tRCheekInnerDecr, weight: 1.1 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'cheekbonesPlus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tLCheekBonesIncr, weight: 1.5 },
+            { target: tRCheekBonesIncr, weight: 1.5 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'cheekbonesMinus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tLCheekBonesDecr, weight: 1.5 },
+            { target: tRCheekBonesDecr, weight: 1.5 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'jawWidthPlus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tChinWidthIncr, weight: 1.45 },
+            { target: tChinBonesIncr, weight: 1.15 },
+            { target: tHeadFatIncr, weight: 0.55 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'jawWidthMinus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tChinWidthDecr, weight: 1.45 },
+            { target: tChinBonesDecr, weight: 1.15 },
+            { target: tHeadFatDecr, weight: 0.45 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'chinShapePlus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tChinProminentIncr, weight: 1.35 },
+            { target: tChinHeightIncr, weight: 0.9 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'chinShapeMinus',
+      delta: zeroEyeOffsets(
+        combineTargets(
+          [
+            { target: tChinProminentDecr, weight: 1.2 },
+            { target: tChinHeightDecr, weight: 0.95 },
+            { target: tChinTri, weight: 0.7 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'faceWidthPlus',
+      delta: rigidifyEyeOffsets(
+        combineTargets(
+          [
+            { target: tHeadScaleHorizIncr, weight: 1.15 },
+            { target: tHeadOval, weight: 0.35 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'faceWidthMinus',
+      delta: rigidifyEyeOffsets(
+        combineTargets(
+          [
+            { target: tHeadScaleHorizDecr, weight: 1.15 },
+            { target: tHeadInvTri, weight: 0.45 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'headScalePlus',
+      delta: rigidifyEyeOffsets(
+        combineTargets(
+          [
+            { target: tHeadScaleHorizIncr, weight: 0.9 },
+            { target: tHeadScaleVertIncr, weight: 0.9 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
+    {
+      name: 'headScaleMinus',
+      delta: rigidifyEyeOffsets(
+        combineTargets(
+          [
+            { target: tHeadScaleHorizDecr, weight: 0.9 },
+            { target: tHeadScaleVertDecr, weight: 0.9 },
+          ],
+          scaleFactor
+        )
+      ),
+    },
   ]
 
-  // Compute eye centers for clean planar UV projection so procedural iris/pupil maps cleanly
-  const leftEyeVerts = new Set()
-  const rightEyeVerts = new Set()
-  for (const face of eyeFaces) {
-    for (const [vIdx] of face) {
-      if (posFlat[vIdx * 3] >= 0) leftEyeVerts.add(vIdx)
-      else rightEyeVerts.add(vIdx)
-    }
-  }
   function getEyeBounds(vertSet) {
     let exMin = Infinity,
       exMax = -Infinity,
       eyMin = Infinity,
-      eyMax = -Infinity
+      eyMax = -Infinity,
+      ezMin = Infinity,
+      ezMax = -Infinity
     for (const vIdx of vertSet) {
       const x = posFlat[vIdx * 3],
-        y = posFlat[vIdx * 3 + 1]
+        y = posFlat[vIdx * 3 + 1],
+        z = posFlat[vIdx * 3 + 2]
       if (x < exMin) exMin = x
       if (x > exMax) exMax = x
       if (y < eyMin) eyMin = y
       if (y > eyMax) eyMax = y
+      if (z < ezMin) ezMin = z
+      if (z > ezMax) ezMax = z
     }
     return {
       cx: (exMin + exMax) * 0.5,
       cy: (eyMin + eyMax) * 0.5,
+      cz: (ezMin + ezMax) * 0.5,
       rx: Math.max(0.001, (exMax - exMin) * 0.5),
       ry: Math.max(0.001, (eyMax - eyMin) * 0.5),
     }
@@ -605,6 +935,19 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
   const eyePrim = buildPrimitive(eyeMesh, 1)
   const targetNames = morphDefs.map((m) => m.name)
 
+  const eyeCenters = {
+    left: [
+      Number(lEyeBounds.cx.toFixed(4)),
+      Number(lEyeBounds.cy.toFixed(4)),
+      Number(lEyeBounds.cz.toFixed(4)),
+    ],
+    right: [
+      Number(rEyeBounds.cx.toFixed(4)),
+      Number(rEyeBounds.cy.toFixed(4)),
+      Number(rEyeBounds.cz.toFixed(4)),
+    ],
+  }
+
   const gltfJson = {
     asset: {
       version: '2.0',
@@ -612,11 +955,24 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
       copyright: 'CC0 1.0 Universal (Public Domain) - MakeHuman Community Base Mesh',
     },
     scene: 0,
-    scenes: [{ name: 'CharacterScene', nodes: [0] }],
+    scenes: [
+      {
+        name: 'CharacterScene',
+        nodes: [0],
+        extras: {
+          anatomicalJoints,
+          eyeCenters,
+        },
+      },
+    ],
     nodes: [
       {
         name: 'CharacterRoot',
         children: [1, 2],
+        extras: {
+          anatomicalJoints,
+          eyeCenters,
+        },
       },
       {
         name: 'HumanBody',
@@ -652,7 +1008,7 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
         name: 'HumanBodyMesh',
         primitives: [bodyPrim],
         weights: new Array(targetNames.length).fill(0),
-        extras: { targetNames },
+        extras: { targetNames, anatomicalJoints, eyeCenters },
       },
       {
         name: 'HumanEyesMesh',
@@ -697,7 +1053,11 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
   const outPath = path.join(outDir, outputFilename)
   fs.writeFileSync(outPath, glbBuffer)
   console.log(
-    `[build_models] Wrote ${outputFilename} (${(glbBuffer.length / 1024 / 1024).toFixed(2)} MB)`
+    `[build_models] Wrote ${outputFilename} (${(glbBuffer.length / 1024 / 1024).toFixed(
+      2
+    )} MB) — MorphTargets: ${targetNames.length} | AnatomicalJoints: ${
+      anatomicalJoints.length
+    }`
   )
 }
 
@@ -719,8 +1079,8 @@ buildGLB({
     { target: tFemaleMinWeight, weight: 0.35 },
     { target: tHeadInvTri, weight: 0.65 },
     { target: tHeadOval, weight: 0.45 },
-    { target: tHeadScaleHoriz, weight: 0.5 },
-    { target: tHeadScaleVert, weight: 0.4 },
+    { target: tHeadScaleHorizIncr, weight: 0.5 },
+    { target: tHeadScaleVertIncr, weight: 0.4 },
     { target: tChinTri, weight: 0.9 },
     { target: tChinWidthDecr, weight: 0.85 },
     { target: tChinHeightDecr, weight: 0.55 },

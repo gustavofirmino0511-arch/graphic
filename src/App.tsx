@@ -7,10 +7,18 @@ import StatusBar from './components/StatusBar'
 import { CHARACTER_STYLES, type CharacterStyleId } from './config/characterStyles'
 import {
   BODY_PRESETS,
+  DEFAULT_FACIAL_PROPORTIONS,
+  FACE_PRESETS,
   type BodyPresetId,
   type BrushSettings,
   type ExtendedBodyProportions,
+  type FacePresetId,
+  type FacialProportions,
 } from './systems/bodyEditorSystem'
+import {
+  DEFAULT_JOINT_POSE,
+  type JointPoseState,
+} from './systems/skeletonSystem'
 
 export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'sculpt' | 'measure'
 
@@ -28,6 +36,7 @@ export interface ModelMetrics {
   faces: number
   meshes: number
   morphTargetCount: number
+  skeletonJointCount: number
   height: number
   width: number
   depth: number
@@ -71,6 +80,8 @@ export interface AppState {
   metrics: ModelMetrics
   transform: TransformState
   proportions: BodyProportions
+  faceProportions: FacialProportions
+  jointPose: JointPoseState
   brush: BrushSettings
   sculptHistory: SculptHistoryMeta
   measurement: MeasurementState
@@ -86,10 +97,12 @@ const DEFAULT_TRANSFORM: TransformState = {
 const DEFAULT_BRUSH: BrushSettings = {
   enabled: true,
   mode: 'inflate',
-  radius: 0.11,
+  radius: 0.08,
   strength: 0.45,
   symmetryX: true,
+  protectFacialStructures: true,
   protectExtremities: true,
+  facialFineMode: true,
 }
 
 function getDefaultProportions(styleId: CharacterStyleId): BodyProportions {
@@ -119,12 +132,15 @@ export default function App() {
       faces: 0,
       meshes: 0,
       morphTargetCount: 0,
+      skeletonJointCount: 20,
       height: 1.8,
       width: 1.14,
       depth: 0.46,
     },
     transform: DEFAULT_TRANSFORM,
     proportions: getDefaultProportions('realistic'),
+    faceProportions: DEFAULT_FACIAL_PROPORTIONS,
+    jointPose: DEFAULT_JOINT_POSE,
     brush: DEFAULT_BRUSH,
     sculptHistory: {
       undoSteps: 0,
@@ -163,6 +179,11 @@ export default function App() {
       materialColor: cfg.defaultSkinColor,
       eyeColor: cfg.eyeIrisColor,
       proportions: getDefaultProportions(styleId),
+      faceProportions: DEFAULT_FACIAL_PROPORTIONS,
+      jointPose: {
+        ...DEFAULT_JOINT_POSE,
+        showSkeleton: s.jointPose.showSkeleton,
+      },
       transform: DEFAULT_TRANSFORM,
       sculptHistory: {
         undoSteps: 0,
@@ -250,6 +271,46 @@ export default function App() {
     setState((s) => ({
       ...s,
       proportions: getDefaultProportions(s.styleId),
+    }))
+  }, [])
+
+  const updateFaceProportions = useCallback((partial: Partial<FacialProportions>) => {
+    setState((s) => ({
+      ...s,
+      faceProportions: { ...s.faceProportions, ...partial },
+    }))
+  }, [])
+
+  const applyFacePreset = useCallback((presetId: FacePresetId) => {
+    const preset = FACE_PRESETS[presetId]
+    if (!preset) return
+    setState((s) => ({
+      ...s,
+      faceProportions: { ...preset.values },
+    }))
+  }, [])
+
+  const resetFaceProportions = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      faceProportions: DEFAULT_FACIAL_PROPORTIONS,
+    }))
+  }, [])
+
+  const updateJointPose = useCallback((partial: Partial<JointPoseState>) => {
+    setState((s) => ({
+      ...s,
+      jointPose: { ...s.jointPose, ...partial },
+    }))
+  }, [])
+
+  const resetJointPose = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      jointPose: {
+        ...DEFAULT_JOINT_POSE,
+        showSkeleton: s.jointPose.showSkeleton,
+      },
     }))
   }, [])
 
@@ -407,6 +468,11 @@ export default function App() {
           onUpdateProportions={updateProportions}
           onApplyBodyPreset={applyBodyPreset}
           onResetProportions={resetProportions}
+          onUpdateFaceProportions={updateFaceProportions}
+          onApplyFacePreset={applyFacePreset}
+          onResetFaceProportions={resetFaceProportions}
+          onUpdateJointPose={updateJointPose}
+          onResetJointPose={resetJointPose}
           onUpdateBrush={updateBrush}
           onUndoSculpt={triggerUndoSculpt}
           onRedoSculpt={triggerRedoSculpt}

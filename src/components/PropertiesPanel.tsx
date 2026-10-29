@@ -8,9 +8,13 @@ import type {
 import { CHARACTER_STYLES, type CharacterStyleId } from '../config/characterStyles'
 import {
   BODY_PRESETS,
+  FACE_PRESETS,
   type BodyPresetId,
   type BrushSettings,
+  type FacePresetId,
+  type FacialProportions,
 } from '../systems/bodyEditorSystem'
+import type { JointPoseState } from '../systems/skeletonSystem'
 
 interface PropertiesPanelProps {
   state: AppState
@@ -29,6 +33,11 @@ interface PropertiesPanelProps {
   onUpdateProportions: (partial: Partial<BodyProportions>) => void
   onApplyBodyPreset: (presetId: BodyPresetId) => void
   onResetProportions: () => void
+  onUpdateFaceProportions: (partial: Partial<FacialProportions>) => void
+  onApplyFacePreset: (presetId: FacePresetId) => void
+  onResetFaceProportions: () => void
+  onUpdateJointPose: (partial: Partial<JointPoseState>) => void
+  onResetJointPose: () => void
   onUpdateBrush: (partial: Partial<BrushSettings>) => void
   onUndoSculpt: () => void
   onRedoSculpt: () => void
@@ -62,6 +71,11 @@ export default function PropertiesPanel({
   onUpdateProportions,
   onApplyBodyPreset,
   onResetProportions,
+  onUpdateFaceProportions,
+  onApplyFacePreset,
+  onResetFaceProportions,
+  onUpdateJointPose,
+  onResetJointPose,
   onUpdateBrush,
   onUndoSculpt,
   onRedoSculpt,
@@ -174,7 +188,7 @@ export default function PropertiesPanel({
             </div>
             <input
               type="range"
-              min="0.04"
+              min="0.02"
               max="0.28"
               step="0.01"
               value={state.brush.radius}
@@ -216,12 +230,38 @@ export default function PropertiesPanel({
             <label className="panel__checkbox-label">
               <input
                 type="checkbox"
+                checked={state.brush.protectFacialStructures}
+                onChange={(e) =>
+                  onUpdateBrush({ protectFacialStructures: e.target.checked })
+                }
+              />
+              Proteger Olhos, Nariz, Boca e Orelhas
+            </label>
+          </div>
+
+          <div className="panel__info-row">
+            <label className="panel__checkbox-label">
+              <input
+                type="checkbox"
                 checked={state.brush.protectExtremities}
                 onChange={(e) =>
                   onUpdateBrush({ protectExtremities: e.target.checked })
                 }
               />
-              Proteger Rosto, Mãos e Pés
+              Proteger Mãos e Pés
+            </label>
+          </div>
+
+          <div className="panel__info-row">
+            <label className="panel__checkbox-label">
+              <input
+                type="checkbox"
+                checked={state.brush.facialFineMode}
+                onChange={(e) =>
+                  onUpdateBrush({ facialFineMode: e.target.checked })
+                }
+              />
+              Precisão Automática ao Esculpir Rosto
             </label>
           </div>
 
@@ -254,7 +294,161 @@ export default function PropertiesPanel({
           </div>
         </div>
 
-        {/* 2. Body Customization & Proportions (Item 2.2) */}
+        {/* 1B. Facial Customization & Proportions (Item 3) */}
+        <div className="panel__section">
+          <div className="panel__section-header-row">
+            <span className="panel__section-title" style={{ marginBottom: 0 }}>
+              Personalização Facial
+            </span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button
+                className="panel__mini-btn"
+                onClick={() => onSelectCameraPreset('face')}
+                title="Aproximar câmera no rosto"
+              >
+                Focar Rosto
+              </button>
+              <button className="panel__mini-btn" onClick={onResetFaceProportions}>
+                Resetar
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Facial Presets */}
+          <div className="panel__cam-controls" style={{ marginBottom: '10px' }}>
+            {(Object.keys(FACE_PRESETS) as FacePresetId[]).map((presetKey) => (
+              <button
+                key={presetKey}
+                className="panel__cam-btn"
+                onClick={() => onApplyFacePreset(presetKey)}
+              >
+                {FACE_PRESETS[presetKey].label}
+              </button>
+            ))}
+          </div>
+
+          <div className="panel__slider-group">
+            <div className="panel__slider-label">
+              <span>Volume das Bochechas</span>
+              <span className="panel__slider-val">
+                {Math.round(state.faceProportions.cheekVolume * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.05"
+              value={state.faceProportions.cheekVolume}
+              onChange={(e) =>
+                onUpdateFaceProportions({ cheekVolume: Number(e.target.value) })
+              }
+              className="panel__slider"
+            />
+          </div>
+
+          <div className="panel__slider-group">
+            <div className="panel__slider-label">
+              <span>Maçãs do Rosto / Transição</span>
+              <span className="panel__slider-val">
+                {Math.round(state.faceProportions.cheekbones * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.05"
+              value={state.faceProportions.cheekbones}
+              onChange={(e) =>
+                onUpdateFaceProportions({ cheekbones: Number(e.target.value) })
+              }
+              className="panel__slider"
+            />
+          </div>
+
+          <div className="panel__slider-group">
+            <div className="panel__slider-label">
+              <span>Largura da Face</span>
+              <span className="panel__slider-val">
+                {Math.round(state.faceProportions.faceWidth * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.05"
+              value={state.faceProportions.faceWidth}
+              onChange={(e) =>
+                onUpdateFaceProportions({ faceWidth: Number(e.target.value) })
+              }
+              className="panel__slider"
+            />
+          </div>
+
+          <div className="panel__slider-group">
+            <div className="panel__slider-label">
+              <span>Largura da Mandíbula</span>
+              <span className="panel__slider-val">
+                {Math.round(state.faceProportions.jawWidth * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.05"
+              value={state.faceProportions.jawWidth}
+              onChange={(e) =>
+                onUpdateFaceProportions({ jawWidth: Number(e.target.value) })
+              }
+              className="panel__slider"
+            />
+          </div>
+
+          <div className="panel__slider-group">
+            <div className="panel__slider-label">
+              <span>Formato do Queixo</span>
+              <span className="panel__slider-val">
+                {Math.round(state.faceProportions.chinShape * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.05"
+              value={state.faceProportions.chinShape}
+              onChange={(e) =>
+                onUpdateFaceProportions({ chinShape: Number(e.target.value) })
+              }
+              className="panel__slider"
+            />
+          </div>
+
+          <div className="panel__slider-group">
+            <div className="panel__slider-label">
+              <span>Proporções da Cabeça</span>
+              <span className="panel__slider-val">
+                {Math.round(state.faceProportions.headScale * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.05"
+              value={state.faceProportions.headScale}
+              onChange={(e) =>
+                onUpdateFaceProportions({ headScale: Number(e.target.value) })
+              }
+              className="panel__slider"
+            />
+          </div>
+        </div>
+
+        {/* 2. Body Customization & Proportions (Item 4) */}
         <div className="panel__section">
           <div className="panel__section-header-row">
             <span className="panel__section-title" style={{ marginBottom: 0 }}>
@@ -333,6 +527,26 @@ export default function PropertiesPanel({
               value={state.proportions.torsoWidth}
               onChange={(e) =>
                 onUpdateProportions({ torsoWidth: Number(e.target.value) })
+              }
+              className="panel__slider"
+            />
+          </div>
+
+          <div className="panel__slider-group">
+            <div className="panel__slider-label">
+              <span>Volume do Peito</span>
+              <span className="panel__slider-val">
+                {Math.round(state.proportions.chestVolume * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.05"
+              value={state.proportions.chestVolume}
+              onChange={(e) =>
+                onUpdateProportions({ chestVolume: Number(e.target.value) })
               }
               className="panel__slider"
             />
@@ -481,6 +695,173 @@ export default function PropertiesPanel({
           )}
         </div>
 
+        {/* 2B. 3D Skeleton & Joint Articulation (Item 6) */}
+        <div className="panel__section">
+          <div className="panel__section-header-row">
+            <span className="panel__section-title" style={{ marginBottom: 0 }}>
+              Esqueleto 3D e Articulações
+            </span>
+            <button className="panel__mini-btn" onClick={onResetJointPose}>
+              Resetar Pose
+            </button>
+          </div>
+
+          <div className="panel__info-row">
+            <span className="panel__info-label">Estrutura Óssea</span>
+            <span
+              className={`panel__badge ${
+                state.metrics.skeletonJointCount > 0
+                  ? 'panel__badge--success'
+                  : 'panel__badge--warning'
+              }`}
+            >
+              {state.metrics.skeletonJointCount > 0
+                ? `● ${state.metrics.skeletonJointCount} Articulações`
+                : '○ Malha Estática'}
+            </span>
+          </div>
+
+          {state.metrics.skeletonJointCount > 0 ? (
+            <>
+              <div className="panel__cam-controls" style={{ marginBottom: '10px' }}>
+                <button
+                  className={`panel__cam-btn ${
+                    state.jointPose.showSkeleton ? 'panel__cam-btn--active' : ''
+                  }`}
+                  onClick={() =>
+                    onUpdateJointPose({ showSkeleton: !state.jointPose.showSkeleton })
+                  }
+                  style={{ gridColumn: 'span 2' }}
+                >
+                  {state.jointPose.showSkeleton
+                    ? '● Ocultar Esqueleto 3D'
+                    : '🦴 Mostrar Esqueleto 3D'}
+                </button>
+              </div>
+
+              <div className="panel__slider-group">
+                <div className="panel__slider-label">
+                  <span>Giro da Cabeça (Pescoço)</span>
+                  <span className="panel__slider-val">{state.jointPose.headYaw}°</span>
+                </div>
+                <input
+                  type="range"
+                  min="-45"
+                  max="45"
+                  step="1"
+                  value={state.jointPose.headYaw}
+                  onChange={(e) =>
+                    onUpdateJointPose({ headYaw: Number(e.target.value) })
+                  }
+                  className="panel__slider"
+                />
+              </div>
+
+              <div className="panel__slider-group">
+                <div className="panel__slider-label">
+                  <span>Inclinação da Cabeça</span>
+                  <span className="panel__slider-val">{state.jointPose.headPitch}°</span>
+                </div>
+                <input
+                  type="range"
+                  min="-30"
+                  max="30"
+                  step="1"
+                  value={state.jointPose.headPitch}
+                  onChange={(e) =>
+                    onUpdateJointPose({ headPitch: Number(e.target.value) })
+                  }
+                  className="panel__slider"
+                />
+              </div>
+
+              <div className="panel__slider-group">
+                <div className="panel__slider-label">
+                  <span>Ombro Esquerdo (Elevação)</span>
+                  <span className="panel__slider-val">
+                    {state.jointPose.leftShoulderPitch}°
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="-40"
+                  max="55"
+                  step="1"
+                  value={state.jointPose.leftShoulderPitch}
+                  onChange={(e) =>
+                    onUpdateJointPose({ leftShoulderPitch: Number(e.target.value) })
+                  }
+                  className="panel__slider"
+                />
+              </div>
+
+              <div className="panel__slider-group">
+                <div className="panel__slider-label">
+                  <span>Cotovelo Esquerdo (Flexão)</span>
+                  <span className="panel__slider-val">
+                    {state.jointPose.leftElbowFlex}°
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="85"
+                  step="1"
+                  value={state.jointPose.leftElbowFlex}
+                  onChange={(e) =>
+                    onUpdateJointPose({ leftElbowFlex: Number(e.target.value) })
+                  }
+                  className="panel__slider"
+                />
+              </div>
+
+              <div className="panel__slider-group">
+                <div className="panel__slider-label">
+                  <span>Ombro Direito (Elevação)</span>
+                  <span className="panel__slider-val">
+                    {state.jointPose.rightShoulderPitch}°
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="-40"
+                  max="55"
+                  step="1"
+                  value={state.jointPose.rightShoulderPitch}
+                  onChange={(e) =>
+                    onUpdateJointPose({ rightShoulderPitch: Number(e.target.value) })
+                  }
+                  className="panel__slider"
+                />
+              </div>
+
+              <div className="panel__slider-group">
+                <div className="panel__slider-label">
+                  <span>Cotovelo Direito (Flexão)</span>
+                  <span className="panel__slider-val">
+                    {state.jointPose.rightElbowFlex}°
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="85"
+                  step="1"
+                  value={state.jointPose.rightElbowFlex}
+                  onChange={(e) =>
+                    onUpdateJointPose({ rightElbowFlex: Number(e.target.value) })
+                  }
+                  className="panel__slider"
+                />
+              </div>
+            </>
+          ) : (
+            <p className="panel__style-desc" style={{ marginTop: '4px' }}>
+              O protótipo original não possui articulações embutidas. Selecione o modelo Realista HD ou Anime HD para visualizar e articular o esqueleto 3D.
+            </p>
+          )}
+        </div>
+
         {/* 3. Style & Base Model Architecture */}
         <div className="panel__section">
           <div className="panel__section-title">Estilo e Modelo 3D</div>
@@ -538,6 +919,14 @@ export default function PropertiesPanel({
               {state.metrics.morphTargetCount > 0
                 ? `${state.metrics.morphTargetCount} ativos`
                 : 'Deformação Axial'}
+            </span>
+          </div>
+          <div className="panel__info-row">
+            <span className="panel__info-label">Esqueleto 3D</span>
+            <span className="panel__info-value">
+              {state.metrics.skeletonJointCount > 0
+                ? `${state.metrics.skeletonJointCount} articulações`
+                : 'Ausente (Estático)'}
             </span>
           </div>
           <div className="panel__info-row">

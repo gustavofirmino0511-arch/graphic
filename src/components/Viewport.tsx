@@ -26,6 +26,12 @@ import {
   applyBrushDab,
   type WeldedTopology,
 } from '../systems/bodyEditorSystem'
+import {
+  isPoseNeutral,
+  applyJointArticulationToPositionPoint,
+  computeArticulatedJointPositions,
+  type AnatomicalJoint,
+} from '../systems/skeletonSystem'
 
 interface ViewportProps {
   state: AppState
@@ -131,6 +137,7 @@ function CharacterMesh({
     faces: number
     meshes: number
     morphTargetCount: number
+    skeletonJointCount: number
     baseHeight: number
     baseWidth: number
     baseDepth: number
@@ -149,8 +156,8 @@ function CharacterMesh({
 
   const toonGradient = useMemo(() => createAnimeToonGradientMap(), [])
 
-  // Clone scene, normalize orientation, and build welded sculpting topology once per model URL
-  const { clonedScene, bodyMeshes, eyeMeshes } = useMemo(() => {
+  // Clone scene, normalize orientation, extract embedded joints & eyeCenters, and build welded sculpting topology
+  const { clonedScene, bodyMeshes, eyeMeshes, anatomicalJoints } = useMemo(() => {
     const root = gltfScene.clone(true)
     const bodies: THREE.Mesh[] = []
     const eyes: THREE.Mesh[] = []
@@ -164,8 +171,20 @@ function CharacterMesh({
     const rawSize = rawBox.getSize(new THREE.Vector3())
     const isZUp = rawSize.z > rawSize.y * 1.4
 
+    let extractedJoints: AnatomicalJoint[] =
+      (gltfScene.userData?.anatomicalJoints as AnatomicalJoint[] | undefined) ?? []
+    let extractedEyeCenters:
+      | { left: [number, number, number]; right: [number, number, number] }
+      | undefined = gltfScene.userData?.eyeCenters
+
     root.traverse((child) => {
       if (child instanceof THREE.Mesh) {
+        if (!extractedJoints.length && child.userData?.anatomicalJoints) {
+          extractedJoints = child.userData.anatomicalJoints as AnatomicalJoint[]
+        }
+        if (!extractedEyeCenters && child.userData?.eyeCenters) {
+          extractedEyeCenters = child.userData.eyeCenters
+        }
         child.geometry = child.geometry.clone()
         if (isZUp) {
           child.geometry.rotateX(-Math.PI / 2)
@@ -203,7 +222,8 @@ function CharacterMesh({
             child.userData.weldedTopology = buildWeldedTopology(
               child.geometry,
               basePos,
-              uprightHeight
+              uprightHeight,
+              extractedEyeCenters
             )
           }
         }
@@ -213,10 +233,15 @@ function CharacterMesh({
     undoStackRef.current = []
     redoStackRef.current = []
 
-    return { clonedScene: root, bodyMeshes: bodies, eyeMeshes: eyes }
+    return {
+      clonedScene: root,
+      bodyMeshes: bodies,
+      eyeMeshes: eyes,
+      anatomicalJoints: extractedJoints,
+    }
   }, [gltfScene])
 
-  // Sync vertex positions from basePositions + sculptOffsets (and fallback parametric proportions if mesh has no morph targets)
+  // Sync vertex positions from basePositions + sculptOffsets + joint articulation (and fallback parametric proportions if mesh has no morph targets)
   const syncMeshGeometry = useCallback(
     (recomputeNormals: boolean) => {
       const baseInfo = baseMetricsRef.current
@@ -225,6 +250,7 @@ function CharacterMesh({
       const {
         shoulderWidth,
         torsoWidth,
+        chestVolume,
         abdomenVolume,
         armThickness,
         legThickness,
@@ -233,12 +259,61 @@ function CharacterMesh({
         legLength,
       } = state.proportions
 
-      for (const mesh of bodyMeshes) {
+      const {
+        cheekVolume,
+        cheekbones,
+        faceWidth,
+        jawWidth,
+        chinShape,
+        headScale,
+      } = state.faceProportions
+
+      const poseActive = !isPoseNeutral(state.jointPose) && anatomicalJoints.length > 0
+      const jointsMap = new Map<string, [number, number, number]>()
+      if (poseActive) {
+        for (const j of anatomicalJoints) {
+          jointsMap.set(j.id, j.position)
+        }
+      }
+
+      const headQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          THREE.MathUtils.degToRad(state.jointPose.headPitch),
+          THREE.MathUtils.degToRad(state.jointPose.headYaw),
+          0,
+          'YXZ'
+        )
+      )
+      const lShoulderQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(0, 0, THREE.MathUtils.degToRad(state.jointPose.leftShoulderPitch))
+      )
+      const lElbowQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          THREE.MathUtils.degToRad(-state.jointPose.leftElbowFlex * 0.65),
+          THREE.MathUtils.degToRad(state.jointPose.leftElbowFlex * 0.75),
+          0
+        )
+      )
+      const rShoulderQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(0, 0, THREE.MathUtils.degToRad(-state.jointPose.rightShoulderPitch))
+      )
+      const rElbowQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          THREE.MathUtils.degToRad(-state.jointPose.rightElbowFlex * 0.65),
+          THREE.MathUtils.degToRad(-state.jointPose.rightElbowFlex * 0.75),
+          0
+        )
+      )
+      const tempVec = new THREE.Vector3()
+
+      const allMeshes = [...bodyMeshes, ...eyeMeshes]
+      for (const mesh of allMeshes) {
         const basePos: Float32Array | undefined = mesh.userData.basePositions
         const sculptOffsets: Float32Array | undefined = mesh.userData.sculptOffsets
         const posAttr = mesh.geometry.attributes.position as THREE.BufferAttribute
         if (!basePos || !sculptOffsets || !posAttr) continue
 
+        const isEyeMesh = mesh.name.toLowerCase().includes('eye')
         const hasMorphs = Boolean(
           mesh.morphTargetDictionary &&
             mesh.morphTargetInfluences &&
@@ -254,7 +329,7 @@ function CharacterMesh({
           let y = basePos[i + 1] + sculptOffsets[i + 1]
           let z = basePos[i + 2] + sculptOffsets[i + 2]
 
-          if (!hasMorphs) {
+          if (!hasMorphs && !isEyeMesh) {
             const yNorm = y / h
             // Leg length (< 0.52)
             if (yNorm < 0.52) {
@@ -286,6 +361,14 @@ function CharacterMesh({
               }
               x *= 1 + abdomenVolume * 0.18 * Math.max(0, s)
             }
+            // Chest volume (0.68 < yNorm < 0.82)
+            if (yNorm > 0.68 && yNorm < 0.82 && Math.abs(x) < 0.24) {
+              const s = 1 - Math.abs(yNorm - 0.75) / 0.07
+              if (z > 0) {
+                z *= 1 + chestVolume * 0.35 * Math.max(0, s)
+              }
+              x *= 1 + chestVolume * 0.14 * Math.max(0, s)
+            }
             // Torso width (0.48 < yNorm < 0.80)
             if (yNorm > 0.48 && yNorm < 0.8 && Math.abs(x) < 0.25) {
               const w = 1 - Math.abs(yNorm - 0.65) / 0.16
@@ -306,6 +389,36 @@ function CharacterMesh({
               y = armMidY + (y - armMidY) * (1 + armThickness * 0.32)
               z *= 1 + armThickness * 0.32
             }
+            // Head & Facial fallback (yNorm > 0.86)
+            if (yNorm > 0.86) {
+              const headCenterY = 0.93 * h
+              x *= 1 + headScale * 0.1 + faceWidth * 0.1
+              y = headCenterY + (y - headCenterY) * (1 + headScale * 0.1)
+              z *= 1 + headScale * 0.08
+              if (yNorm > 0.87 && yNorm < 0.94 && z > 0) {
+                x *= 1 + (cheekVolume * 0.12 + cheekbones * 0.08 + jawWidth * 0.1)
+                z += (cheekVolume * 0.008 + chinShape * 0.006)
+              }
+            }
+          }
+
+          if (poseActive) {
+            const [ax, ay, az] = applyJointArticulationToPositionPoint(
+              x,
+              y,
+              z,
+              jointsMap,
+              state.jointPose,
+              tempVec,
+              headQuat,
+              lShoulderQuat,
+              lElbowQuat,
+              rShoulderQuat,
+              rElbowQuat
+            )
+            x = ax
+            y = ay
+            z = az
           }
 
           arr[i] = x
@@ -314,7 +427,12 @@ function CharacterMesh({
           if (y < minDeformedY) minDeformedY = y
         }
 
-        if (!hasMorphs && Number.isFinite(minDeformedY) && Math.abs(minDeformedY) > 0.0001) {
+        if (
+          !hasMorphs &&
+          !isEyeMesh &&
+          Number.isFinite(minDeformedY) &&
+          Math.abs(minDeformedY) > 0.0001
+        ) {
           for (let i = 1; i < arr.length; i += 3) {
             arr[i] -= minDeformedY
           }
@@ -326,7 +444,7 @@ function CharacterMesh({
         }
       }
     },
-    [bodyMeshes, state.proportions]
+    [bodyMeshes, eyeMeshes, anatomicalJoints, state.proportions, state.faceProportions, state.jointPose]
   )
 
   // Compute initial model metrics
@@ -364,6 +482,7 @@ function CharacterMesh({
       faces: totalFaces,
       meshes: bodyMeshes.length + eyeMeshes.length,
       morphTargetCount,
+      skeletonJointCount: anatomicalJoints.length,
       baseHeight,
       baseWidth,
       baseDepth,
@@ -374,11 +493,12 @@ function CharacterMesh({
       faces: totalFaces,
       meshes: bodyMeshes.length + eyeMeshes.length,
       morphTargetCount,
+      skeletonJointCount: anatomicalJoints.length,
       height: Number(state.proportions.heightMeters.toFixed(2)),
       width: Number(baseWidth.toFixed(2)),
       depth: Number(baseDepth.toFixed(2)),
     })
-  }, [clonedScene, bodyMeshes, eyeMeshes, onModelLoaded, state.proportions.heightMeters])
+  }, [clonedScene, bodyMeshes, eyeMeshes, anatomicalJoints, onModelLoaded, state.proportions.heightMeters])
 
   // Apply skin and eye materials
   useEffect(() => {
@@ -429,12 +549,13 @@ function CharacterMesh({
     toonGradient,
   ])
 
-  // Apply body proportions (17 Morph Targets when present + fallback parametric shaping)
+  // Apply body & facial proportions (31 Morph Targets when present + fallback parametric shaping)
   useEffect(() => {
     const {
       heightMeters,
       shoulderWidth,
       torsoWidth,
+      chestVolume,
       abdomenVolume,
       armThickness,
       legThickness,
@@ -443,6 +564,15 @@ function CharacterMesh({
       legLength,
       muscleTone,
     } = state.proportions
+
+    const {
+      cheekVolume,
+      cheekbones,
+      faceWidth,
+      jawWidth,
+      chinShape,
+      headScale,
+    } = state.faceProportions
 
     const baseInfo = baseMetricsRef.current
     if (!baseInfo) return
@@ -461,10 +591,13 @@ function CharacterMesh({
             inf[idx] = Math.max(0, Math.min(1.5, val))
           }
         }
+        // 19 Body Morph Targets
         setMorph('shoulderWidthPlus', shoulderWidth > 0 ? shoulderWidth : 0)
         setMorph('shoulderWidthMinus', shoulderWidth < 0 ? -shoulderWidth : 0)
         setMorph('torsoWidthPlus', torsoWidth > 0 ? torsoWidth : 0)
         setMorph('torsoWidthMinus', torsoWidth < 0 ? -torsoWidth : 0)
+        setMorph('chestVolumePlus', chestVolume > 0 ? chestVolume : 0)
+        setMorph('chestVolumeMinus', chestVolume < 0 ? -chestVolume : 0)
         setMorph('abdomenVolumePlus', abdomenVolume > 0 ? abdomenVolume : 0)
         setMorph('abdomenVolumeMinus', abdomenVolume < 0 ? -abdomenVolume : 0)
         setMorph('armThicknessPlus', armThickness > 0 ? armThickness : 0)
@@ -478,6 +611,20 @@ function CharacterMesh({
         setMorph('legLengthPlus', legLength > 0 ? legLength : 0)
         setMorph('legLengthMinus', legLength < 0 ? -legLength : 0)
         setMorph('muscleTone', muscleTone)
+
+        // 12 Eye-Safe Facial Morph Targets
+        setMorph('cheekVolumePlus', cheekVolume > 0 ? cheekVolume : 0)
+        setMorph('cheekVolumeMinus', cheekVolume < 0 ? -cheekVolume : 0)
+        setMorph('cheekbonesPlus', cheekbones > 0 ? cheekbones : 0)
+        setMorph('cheekbonesMinus', cheekbones < 0 ? -cheekbones : 0)
+        setMorph('jawWidthPlus', jawWidth > 0 ? jawWidth : 0)
+        setMorph('jawWidthMinus', jawWidth < 0 ? -jawWidth : 0)
+        setMorph('chinShapePlus', chinShape > 0 ? chinShape : 0)
+        setMorph('chinShapeMinus', chinShape < 0 ? -chinShape : 0)
+        setMorph('faceWidthPlus', faceWidth > 0 ? faceWidth : 0)
+        setMorph('faceWidthMinus', faceWidth < 0 ? -faceWidth : 0)
+        setMorph('headScalePlus', headScale > 0 ? headScale : 0)
+        setMorph('headScaleMinus', headScale < 0 ? -headScale : 0)
       }
     }
 
@@ -498,18 +645,36 @@ function CharacterMesh({
     const effectiveDepth =
       baseInfo.baseDepth *
       heightScale *
-      (1 + torsoWidth * 0.08 + Math.max(0, abdomenVolume) * 0.12 + thighVolume * 0.05)
+      (1 +
+        torsoWidth * 0.08 +
+        Math.max(0, chestVolume) * 0.06 +
+        Math.max(0, abdomenVolume) * 0.12 +
+        thighVolume * 0.05)
 
     onModelLoaded({
       vertices: baseInfo.vertices,
       faces: baseInfo.faces,
       meshes: baseInfo.meshes,
       morphTargetCount: baseInfo.morphTargetCount,
+      skeletonJointCount: baseInfo.skeletonJointCount,
       height: Number(heightMeters.toFixed(2)),
       width: Number(effectiveWidth.toFixed(2)),
       depth: Number(effectiveDepth.toFixed(2)),
     })
-  }, [state.proportions, bodyMeshes, eyeMeshes, clonedScene, onModelLoaded, syncMeshGeometry])
+  }, [
+    state.proportions,
+    state.faceProportions,
+    bodyMeshes,
+    eyeMeshes,
+    clonedScene,
+    onModelLoaded,
+    syncMeshGeometry,
+  ])
+
+  // Apply 3D Joint Articulation whenever jointPose changes
+  useEffect(() => {
+    syncMeshGeometry(true)
+  }, [state.jointPose, syncMeshGeometry])
 
   // Handle Undo Sculpt Trigger
   useEffect(() => {
@@ -581,12 +746,16 @@ function CharacterMesh({
     const localPoint = hitMesh.worldToLocal(e.point.clone())
     const worldScale = hitMesh.getWorldScale(new THREE.Vector3()).x || 1
     const localRadius = state.brush.radius / worldScale
+    const localHitNormal = e.face
+      ? e.face.normal.clone().normalize()
+      : new THREE.Vector3(0, 0, 1)
 
     const changed = applyBrushDab({
       topology,
       currentPositions: posAttr.array as Float32Array,
       sculptOffsets,
       localHitPoint: localPoint,
+      localHitNormal,
       localRadius,
       settings: state.brush,
     })
@@ -653,13 +822,61 @@ function CharacterMesh({
     }
   }
 
+  const baseHeight = baseMetricsRef.current?.baseHeight ?? 1.795
+  const heightScale = state.proportions.heightMeters / baseHeight
+  const articulatedJoints = useMemo(() => {
+    if (!state.jointPose.showSkeleton || anatomicalJoints.length === 0) return []
+    return computeArticulatedJointPositions(anatomicalJoints, state.jointPose, heightScale)
+  }, [anatomicalJoints, state.jointPose, heightScale])
+
+  const jointMap = useMemo(() => {
+    const m = new Map<string, AnatomicalJoint>()
+    for (const j of articulatedJoints) m.set(j.id, j)
+    return m
+  }, [articulatedJoints])
+
   return (
-    <primitive
-      object={clonedScene}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerOut={handlePointerLeave}
-    />
+    <group>
+      <primitive
+        object={clonedScene}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerOut={handlePointerLeave}
+      />
+
+      {/* 3D Skeleton & Joint Hierarchy Overlay */}
+      {state.jointPose.showSkeleton && articulatedJoints.length > 0 && (
+        <group position={[0, clonedScene.position.y, 0]}>
+          {articulatedJoints.map((joint) => {
+            const parentJoint = joint.parent ? jointMap.get(joint.parent) : undefined
+            const isPrimaryPivot =
+              joint.id === 'neck' ||
+              joint.id === 'head' ||
+              joint.id.startsWith('shoulder_') ||
+              joint.id.startsWith('elbow_')
+            return (
+              <group key={joint.id}>
+                <mesh position={joint.position}>
+                  <sphereGeometry args={[isPrimaryPivot ? 0.018 : 0.013, 16, 16]} />
+                  <meshBasicMaterial
+                    color={isPrimaryPivot ? '#facc15' : '#38bdf8'}
+                    depthTest={false}
+                  />
+                </mesh>
+                {parentJoint && (
+                  <Line
+                    points={[parentJoint.position, joint.position]}
+                    color="#38bdf8"
+                    lineWidth={2.5}
+                    depthTest={false}
+                  />
+                )}
+              </group>
+            )
+          })}
+        </group>
+      )}
+    </group>
   )
 }
 
@@ -1190,7 +1407,13 @@ export default function Viewport({
         {state.activeTool === 'sculpt' && state.brush.enabled && (
           <BrushCursorIndicator
             hover={brushHover}
-            radius={state.brush.radius}
+            radius={
+              state.brush.facialFineMode &&
+              brushHover &&
+              brushHover.point.y > state.metrics.height * 0.855
+                ? Math.min(state.brush.radius, 0.055)
+                : state.brush.radius
+            }
             mode={state.brush.mode}
             symmetryX={state.brush.symmetryX}
           />
