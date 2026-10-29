@@ -106,6 +106,23 @@ const tUpperLegDecr = loadTarget('measure-upperleg-height-decr.target')
 const tLowerLegIncr = loadTarget('measure-lowerleg-height-incr.target')
 const tLowerLegDecr = loadTarget('measure-lowerleg-height-decr.target')
 
+const tStomachIncr = loadTarget('stomach-pregnant-incr.target')
+const tStomachDecr = loadTarget('stomach-pregnant-decr.target')
+const tStomachToneIncr = loadTarget('stomach-tone-incr.target')
+const tStomachToneDecr = loadTarget('stomach-tone-decr.target')
+const tUpperArmCircIncr = loadTarget('measure-upperarm-circ-incr.target')
+const tUpperArmCircDecr = loadTarget('measure-upperarm-circ-decr.target')
+const tWristCircIncr = loadTarget('measure-wrist-circ-incr.target')
+const tWristCircDecr = loadTarget('measure-wrist-circ-decr.target')
+const tThighCircIncr = loadTarget('measure-thigh-circ-incr.target')
+const tThighCircDecr = loadTarget('measure-thigh-circ-decr.target')
+const tCalfCircIncr = loadTarget('measure-calf-circ-incr.target')
+const tCalfCircDecr = loadTarget('measure-calf-circ-decr.target')
+const tAnkleCircIncr = loadTarget('measure-ankle-circ-incr.target')
+const tAnkleCircDecr = loadTarget('measure-ankle-circ-decr.target')
+const tHipsCircIncr = loadTarget('measure-hips-circ-incr.target')
+const tHipsCircDecr = loadTarget('measure-hips-circ-decr.target')
+
 const tHeadInvTri = loadTarget('head-invertedtriangular.target')
 const tHeadOval = loadTarget('head-oval.target')
 const tHeadScaleHoriz = loadTarget('head-scale-horiz-incr.target')
@@ -254,6 +271,88 @@ function buildGLB({ outputFilename, baseWeights, isAnime = false, scaleFactor = 
         [
           { target: tChestDecr, weight: 1.4 },
           { target: tWaistDecr, weight: 1.4 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'abdomenVolumePlus',
+      delta: combineTargets(
+        [
+          { target: tStomachIncr, weight: 0.95 },
+          { target: tStomachToneDecr, weight: 0.7 },
+          { target: tWaistIncr, weight: 0.9 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'abdomenVolumeMinus',
+      delta: combineTargets(
+        [
+          { target: tStomachDecr, weight: 0.7 },
+          { target: tStomachToneIncr, weight: 0.95 },
+          { target: tWaistDecr, weight: 1.1 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'armThicknessPlus',
+      delta: combineTargets(
+        [
+          { target: tUpperArmCircIncr, weight: 1.65 },
+          { target: tWristCircIncr, weight: 1.35 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'armThicknessMinus',
+      delta: combineTargets(
+        [
+          { target: tUpperArmCircDecr, weight: 1.65 },
+          { target: tWristCircDecr, weight: 1.35 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'legThicknessPlus',
+      delta: combineTargets(
+        [
+          { target: tCalfCircIncr, weight: 1.75 },
+          { target: tAnkleCircIncr, weight: 1.25 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'legThicknessMinus',
+      delta: combineTargets(
+        [
+          { target: tCalfCircDecr, weight: 1.75 },
+          { target: tAnkleCircDecr, weight: 1.25 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'thighVolumePlus',
+      delta: combineTargets(
+        [
+          { target: tThighCircIncr, weight: 1.75 },
+          { target: tHipsCircIncr, weight: 1.1 },
+        ],
+        scaleFactor
+      ),
+    },
+    {
+      name: 'thighVolumeMinus',
+      delta: combineTargets(
+        [
+          { target: tThighCircDecr, weight: 1.75 },
+          { target: tHipsCircDecr, weight: 1.1 },
         ],
         scaleFactor
       ),

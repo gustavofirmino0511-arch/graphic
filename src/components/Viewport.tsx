@@ -1,4 +1,4 @@
-import { Suspense, useRef, useEffect, useMemo } from 'react'
+import { Suspense, useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber'
 import {
   OrbitControls,
@@ -21,6 +21,11 @@ import {
   createEyeTexture,
   createAnimeToonGradientMap,
 } from '../config/characterStyles'
+import {
+  buildWeldedTopology,
+  applyBrushDab,
+  type WeldedTopology,
+} from '../systems/bodyEditorSystem'
 
 interface ViewportProps {
   state: AppState
@@ -28,6 +33,10 @@ interface ViewportProps {
   onModelLoaded: (metrics: ModelMetrics) => void
   onSelectCharacter: (selected: boolean) => void
   onUpdateTransform: (partial: Partial<TransformState>) => void
+  onSculptHistoryChange: (undoSteps: number, redoSteps: number) => void
+  onUndoSculpt: () => void
+  onRedoSculpt: () => void
+  onResetSculpt: () => void
   onAddMeasurePoint: (pt: [number, number, number]) => void
   onClearMeasurement: () => void
 }
@@ -68,13 +77,11 @@ function getCameraPose(
         target: [0, midY, 0],
       }
     case 'left':
-      // Character faces +Z, so anatomical left arm is on +X
       return {
         position: [dist, midY, 0],
         target: [0, midY, 0],
       }
     case 'right':
-      // Character faces +Z, so anatomical right arm is on -X
       return {
         position: [-dist, midY, 0],
         target: [0, midY, 0],
@@ -92,17 +99,29 @@ function getCameraPose(
   }
 }
 
+export interface BrushHoverState {
+  visible: boolean
+  point: THREE.Vector3
+  normal: THREE.Vector3
+}
+
 /**
- * Loads, normalizes orientation (fixing Z-up models like personagem_base_humano.glb),
- * aligns feet at Y = 0, applies realistic/anime materials, and drives morph targets.
+ * Loads, normalizes orientation, applies realistic/anime materials, drives 17 morph targets,
+ * and handles direct mouse sculpting with welded UV-seam-safe topology and Undo/Redo history.
  */
 function CharacterMesh({
   state,
   onModelLoaded,
+  onSculptHistoryChange,
+  onBrushStrokeStateChange,
+  onBrushHoverChange,
   onPointerDownCharacter,
 }: {
   state: AppState
   onModelLoaded: (metrics: ModelMetrics) => void
+  onSculptHistoryChange: (undoSteps: number, redoSteps: number) => void
+  onBrushStrokeStateChange: (active: boolean) => void
+  onBrushHoverChange: (hover: BrushHoverState | null) => void
   onPointerDownCharacter: (e: ThreeEvent<PointerEvent>) => void
 }) {
   const styleCfg = CHARACTER_STYLES[state.styleId]
@@ -117,6 +136,12 @@ function CharacterMesh({
     baseDepth: number
   } | null>(null)
 
+  const isStrokeActiveRef = useRef(false)
+  const strokeModifiedRef = useRef(false)
+  const dabCounterRef = useRef(0)
+  const undoStackRef = useRef<Float32Array[]>([])
+  const redoStackRef = useRef<Float32Array[]>([])
+
   const eyeTexture = useMemo(
     () => createEyeTexture(state.eyeColor, styleCfg.useToonShading),
     [state.eyeColor, styleCfg.useToonShading]
@@ -124,7 +149,7 @@ function CharacterMesh({
 
   const toonGradient = useMemo(() => createAnimeToonGradientMap(), [])
 
-  // Clone scene and normalize geometry orientation once per model URL
+  // Clone scene, normalize orientation, and build welded sculpting topology once per model URL
   const { clonedScene, bodyMeshes, eyeMeshes } = useMemo(() => {
     const root = gltfScene.clone(true)
     const bodies: THREE.Mesh[] = []
@@ -135,7 +160,6 @@ function CharacterMesh({
     root.scale.set(1, 1, 1)
     root.updateMatrixWorld(true)
 
-    // Measure raw bounds first to detect Z-up exported meshes (such as personagem_base_humano.glb)
     const rawBox = new THREE.Box3().setFromObject(root)
     const rawSize = rawBox.getSize(new THREE.Vector3())
     const isZUp = rawSize.z > rawSize.y * 1.4
@@ -143,19 +167,11 @@ function CharacterMesh({
     root.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.geometry = child.geometry.clone()
-        // Reset local node transform into geometry if needed
         if (isZUp) {
-          // Convert Z-up (-Y forward) to Y-up (+Z forward) so character stands upright
           child.geometry.rotateX(-Math.PI / 2)
         }
         if (!child.geometry.attributes.normal) {
           child.geometry.computeVertexNormals()
-        }
-        // Save pristine base positions for fallback parametric proportions on meshes without morph targets
-        if (child.geometry.attributes.position) {
-          child.userData.basePositions = new Float32Array(
-            child.geometry.attributes.position.array
-          )
         }
         if (child.name.toLowerCase().includes('eye')) {
           eyes.push(child)
@@ -165,26 +181,153 @@ function CharacterMesh({
       }
     })
 
-    // Recompute upright bounding box and align feet to Y = 0, centered on X and Z
     const uprightBox = new THREE.Box3().setFromObject(root)
     const center = uprightBox.getCenter(new THREE.Vector3())
     const minY = uprightBox.min.y
+    const uprightHeight = Math.max(0.1, uprightBox.max.y - uprightBox.min.y)
 
-    if (Math.abs(center.x) > 0.0005 || Math.abs(minY) > 0.0005 || Math.abs(center.z) > 0.0005) {
-      root.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
+    root.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        if (
+          Math.abs(center.x) > 0.0005 ||
+          Math.abs(minY) > 0.0005 ||
+          Math.abs(center.z) > 0.0005
+        ) {
           child.geometry.translate(-center.x, -minY, -center.z)
-          if (child.geometry.attributes.position) {
-            child.userData.basePositions = new Float32Array(
-              child.geometry.attributes.position.array
+        }
+        if (child.geometry.attributes.position) {
+          const basePos = new Float32Array(child.geometry.attributes.position.array)
+          child.userData.basePositions = basePos
+          child.userData.sculptOffsets = new Float32Array(basePos.length)
+          if (!child.name.toLowerCase().includes('eye')) {
+            child.userData.weldedTopology = buildWeldedTopology(
+              child.geometry,
+              basePos,
+              uprightHeight
             )
           }
         }
-      })
-    }
+      }
+    })
+
+    undoStackRef.current = []
+    redoStackRef.current = []
 
     return { clonedScene: root, bodyMeshes: bodies, eyeMeshes: eyes }
   }, [gltfScene])
+
+  // Sync vertex positions from basePositions + sculptOffsets (and fallback parametric proportions if mesh has no morph targets)
+  const syncMeshGeometry = useCallback(
+    (recomputeNormals: boolean) => {
+      const baseInfo = baseMetricsRef.current
+      if (!baseInfo) return
+
+      const {
+        shoulderWidth,
+        torsoWidth,
+        abdomenVolume,
+        armThickness,
+        legThickness,
+        thighVolume,
+        armLength,
+        legLength,
+      } = state.proportions
+
+      for (const mesh of bodyMeshes) {
+        const basePos: Float32Array | undefined = mesh.userData.basePositions
+        const sculptOffsets: Float32Array | undefined = mesh.userData.sculptOffsets
+        const posAttr = mesh.geometry.attributes.position as THREE.BufferAttribute
+        if (!basePos || !sculptOffsets || !posAttr) continue
+
+        const hasMorphs = Boolean(
+          mesh.morphTargetDictionary &&
+            mesh.morphTargetInfluences &&
+            mesh.morphTargetInfluences.length > 0
+        )
+
+        const arr = posAttr.array as Float32Array
+        const h = baseInfo.baseHeight
+        let minDeformedY = Infinity
+
+        for (let i = 0; i < arr.length; i += 3) {
+          let x = basePos[i] + sculptOffsets[i]
+          let y = basePos[i + 1] + sculptOffsets[i + 1]
+          let z = basePos[i + 2] + sculptOffsets[i + 2]
+
+          if (!hasMorphs) {
+            const yNorm = y / h
+            // Leg length (< 0.52)
+            if (yNorm < 0.52) {
+              y *= 1 + legLength * 0.14 * (1 - yNorm / 0.52)
+            }
+            // Calf / leg thickness (0.08 < yNorm < 0.28)
+            if (yNorm > 0.08 && yNorm < 0.3 && Math.abs(x) < 0.22) {
+              const s = 1 - Math.abs(yNorm - 0.19) / 0.11
+              const signX = Math.sign(x) || 1
+              const legCenter = signX * 0.095
+              x = legCenter + (x - legCenter) * (1 + legThickness * 0.28 * Math.max(0, s))
+              z *= 1 + legThickness * 0.28 * Math.max(0, s)
+            }
+            // Thigh volume (0.28 < yNorm < 0.52)
+            if (yNorm >= 0.28 && yNorm < 0.52 && Math.abs(x) < 0.25) {
+              const s = 1 - Math.abs(yNorm - 0.4) / 0.12
+              const signX = Math.sign(x) || 1
+              const thighCenter = signX * 0.095
+              x =
+                thighCenter +
+                (x - thighCenter) * (1 + thighVolume * 0.3 * Math.max(0, s))
+              z *= 1 + thighVolume * 0.3 * Math.max(0, s)
+            }
+            // Abdomen volume (0.50 < yNorm < 0.68)
+            if (yNorm > 0.5 && yNorm < 0.68 && Math.abs(x) < 0.22) {
+              const s = 1 - Math.abs(yNorm - 0.59) / 0.09
+              if (z > 0) {
+                z *= 1 + abdomenVolume * 0.42 * Math.max(0, s)
+              }
+              x *= 1 + abdomenVolume * 0.18 * Math.max(0, s)
+            }
+            // Torso width (0.48 < yNorm < 0.80)
+            if (yNorm > 0.48 && yNorm < 0.8 && Math.abs(x) < 0.25) {
+              const w = 1 - Math.abs(yNorm - 0.65) / 0.16
+              x *= 1 + torsoWidth * 0.22 * Math.max(0, w)
+              z *= 1 + torsoWidth * 0.16 * Math.max(0, w)
+            }
+            // Shoulder width (0.72 < yNorm < 0.86)
+            if (yNorm > 0.72 && yNorm < 0.86 && Math.abs(x) < 0.35) {
+              const s = 1 - Math.abs(yNorm - 0.79) / 0.08
+              x *= 1 + shoulderWidth * 0.2 * Math.max(0, s)
+            }
+            // Arm length & thickness (|x| > 0.21 in T-pose)
+            if (Math.abs(x) > 0.21 && yNorm > 0.65 && yNorm < 0.88) {
+              const sign = Math.sign(x)
+              const armSpan = Math.abs(x) - 0.21
+              x = sign * (0.21 + armSpan * (1 + armLength * 0.22))
+              const armMidY = 0.785 * h
+              y = armMidY + (y - armMidY) * (1 + armThickness * 0.32)
+              z *= 1 + armThickness * 0.32
+            }
+          }
+
+          arr[i] = x
+          arr[i + 1] = y
+          arr[i + 2] = z
+          if (y < minDeformedY) minDeformedY = y
+        }
+
+        if (!hasMorphs && Number.isFinite(minDeformedY) && Math.abs(minDeformedY) > 0.0001) {
+          for (let i = 1; i < arr.length; i += 3) {
+            arr[i] -= minDeformedY
+          }
+        }
+
+        posAttr.needsUpdate = true
+        if (recomputeNormals) {
+          mesh.geometry.computeVertexNormals()
+        }
+      }
+    },
+    [bodyMeshes, state.proportions]
+  )
 
   // Compute initial model metrics
   useEffect(() => {
@@ -286,12 +429,16 @@ function CharacterMesh({
     toonGradient,
   ])
 
-  // Apply body proportions (Morph Targets when present, or parametric vertex shaping on prototype)
+  // Apply body proportions (17 Morph Targets when present + fallback parametric shaping)
   useEffect(() => {
     const {
       heightMeters,
       shoulderWidth,
       torsoWidth,
+      abdomenVolume,
+      armThickness,
+      legThickness,
+      thighVolume,
       armLength,
       legLength,
       muscleTone,
@@ -318,6 +465,14 @@ function CharacterMesh({
         setMorph('shoulderWidthMinus', shoulderWidth < 0 ? -shoulderWidth : 0)
         setMorph('torsoWidthPlus', torsoWidth > 0 ? torsoWidth : 0)
         setMorph('torsoWidthMinus', torsoWidth < 0 ? -torsoWidth : 0)
+        setMorph('abdomenVolumePlus', abdomenVolume > 0 ? abdomenVolume : 0)
+        setMorph('abdomenVolumeMinus', abdomenVolume < 0 ? -abdomenVolume : 0)
+        setMorph('armThicknessPlus', armThickness > 0 ? armThickness : 0)
+        setMorph('armThicknessMinus', armThickness < 0 ? -armThickness : 0)
+        setMorph('legThicknessPlus', legThickness > 0 ? legThickness : 0)
+        setMorph('legThicknessMinus', legThickness < 0 ? -legThickness : 0)
+        setMorph('thighVolumePlus', thighVolume > 0 ? thighVolume : 0)
+        setMorph('thighVolumeMinus', thighVolume < 0 ? -thighVolume : 0)
         setMorph('armLengthPlus', armLength > 0 ? armLength : 0)
         setMorph('armLengthMinus', armLength < 0 ? -armLength : 0)
         setMorph('legLengthPlus', legLength > 0 ? legLength : 0)
@@ -326,65 +481,11 @@ function CharacterMesh({
       }
     }
 
-    // Fallback parametric vertex deformation for meshes without morph targets (personagem_base_humano.glb)
     if (!hasMorphs) {
-      for (const mesh of bodyMeshes) {
-        const basePos: Float32Array | undefined = mesh.userData.basePositions
-        const posAttr = mesh.geometry.attributes.position as THREE.BufferAttribute
-        if (!basePos || !posAttr) continue
-
-        const arr = posAttr.array as Float32Array
-        const h = baseInfo.baseHeight
-        let minDeformedY = Infinity
-
-        for (let i = 0; i < arr.length; i += 3) {
-          let x = basePos[i]
-          let y = basePos[i + 1]
-          let z = basePos[i + 2]
-          const yNorm = y / h
-
-          // Leg length adjustment (below hip yNorm < 0.52)
-          if (yNorm < 0.52) {
-            y *= 1 + legLength * 0.14 * (1 - yNorm / 0.52)
-          }
-          // Torso width adjustment (0.48 < yNorm < 0.78 and near trunk |x| < 0.24)
-          if (yNorm > 0.45 && yNorm < 0.82 && Math.abs(x) < 0.25) {
-            const w = 1 - Math.abs(yNorm - 0.64) / 0.2
-            x *= 1 + torsoWidth * 0.22 * Math.max(0, w)
-            z *= 1 + torsoWidth * 0.18 * Math.max(0, w)
-          }
-          // Shoulder width adjustment (0.72 < yNorm < 0.86)
-          if (yNorm > 0.7 && yNorm < 0.86 && Math.abs(x) < 0.35) {
-            const s = 1 - Math.abs(yNorm - 0.79) / 0.09
-            x *= 1 + shoulderWidth * 0.2 * Math.max(0, s)
-          }
-          // Arm length adjustment (|x| > 0.22 in T-pose)
-          if (Math.abs(x) > 0.22 && yNorm > 0.65 && yNorm < 0.88) {
-            const sign = Math.sign(x)
-            const armSpan = Math.abs(x) - 0.22
-            x = sign * (0.22 + armSpan * (1 + armLength * 0.22))
-          }
-
-          arr[i] = x
-          arr[i + 1] = y
-          arr[i + 2] = z
-          if (y < minDeformedY) minDeformedY = y
-        }
-
-        // Keep feet grounded at Y = 0
-        if (Number.isFinite(minDeformedY) && Math.abs(minDeformedY) > 0.0001) {
-          for (let i = 1; i < arr.length; i += 3) {
-            arr[i] -= minDeformedY
-          }
-        }
-        posAttr.needsUpdate = true
-        mesh.geometry.computeVertexNormals()
-      }
+      syncMeshGeometry(true)
     }
 
-    // Scale overall character to match requested heightMeters and keep feet grounded at Y = 0
     const heightScale = heightMeters / baseInfo.baseHeight
-    // When morph target legLength is used on MakeHuman mesh, compensate sole shift so feet stay at Y = 0
     const morphFootShift = hasMorphs ? legLength * 0.056 : 0
 
     clonedScene.scale.set(heightScale, heightScale, heightScale)
@@ -393,9 +494,11 @@ function CharacterMesh({
     const effectiveWidth =
       baseInfo.baseWidth *
       heightScale *
-      (1 + shoulderWidth * 0.06 + armLength * 0.08)
+      (1 + shoulderWidth * 0.06 + armLength * 0.08 + armThickness * 0.03)
     const effectiveDepth =
-      baseInfo.baseDepth * heightScale * (1 + torsoWidth * 0.08)
+      baseInfo.baseDepth *
+      heightScale *
+      (1 + torsoWidth * 0.08 + Math.max(0, abdomenVolume) * 0.12 + thighVolume * 0.05)
 
     onModelLoaded({
       vertices: baseInfo.vertices,
@@ -406,13 +509,234 @@ function CharacterMesh({
       width: Number(effectiveWidth.toFixed(2)),
       depth: Number(effectiveDepth.toFixed(2)),
     })
-  }, [state.proportions, bodyMeshes, eyeMeshes, clonedScene, onModelLoaded])
+  }, [state.proportions, bodyMeshes, eyeMeshes, clonedScene, onModelLoaded, syncMeshGeometry])
+
+  // Handle Undo Sculpt Trigger
+  useEffect(() => {
+    if (state.sculptHistory.undoTrigger === 0) return
+    const mainMesh = bodyMeshes[0]
+    if (!mainMesh || undoStackRef.current.length === 0) return
+
+    const currentOffsets: Float32Array = mainMesh.userData.sculptOffsets
+    redoStackRef.current.push(new Float32Array(currentOffsets))
+    const prev = undoStackRef.current.pop()!
+    currentOffsets.set(prev)
+    syncMeshGeometry(true)
+    onSculptHistoryChange(undoStackRef.current.length, redoStackRef.current.length)
+  }, [state.sculptHistory.undoTrigger, bodyMeshes, syncMeshGeometry, onSculptHistoryChange])
+
+  // Handle Redo Sculpt Trigger
+  useEffect(() => {
+    if (state.sculptHistory.redoTrigger === 0) return
+    const mainMesh = bodyMeshes[0]
+    if (!mainMesh || redoStackRef.current.length === 0) return
+
+    const currentOffsets: Float32Array = mainMesh.userData.sculptOffsets
+    undoStackRef.current.push(new Float32Array(currentOffsets))
+    const next = redoStackRef.current.pop()!
+    currentOffsets.set(next)
+    syncMeshGeometry(true)
+    onSculptHistoryChange(undoStackRef.current.length, redoStackRef.current.length)
+  }, [state.sculptHistory.redoTrigger, bodyMeshes, syncMeshGeometry, onSculptHistoryChange])
+
+  // Handle Reset Sculpt Trigger
+  useEffect(() => {
+    if (state.sculptHistory.resetSculptTrigger === 0) return
+    const mainMesh = bodyMeshes[0]
+    if (!mainMesh) return
+
+    const currentOffsets: Float32Array | undefined = mainMesh.userData.sculptOffsets
+    if (!currentOffsets) return
+    currentOffsets.fill(0)
+    undoStackRef.current = []
+    redoStackRef.current = []
+    syncMeshGeometry(true)
+    onSculptHistoryChange(0, 0)
+  }, [state.sculptHistory.resetSculptTrigger, bodyMeshes, syncMeshGeometry, onSculptHistoryChange])
+
+  // Release active stroke on global pointerup
+  useEffect(() => {
+    const handleGlobalPointerUp = () => {
+      if (isStrokeActiveRef.current) {
+        isStrokeActiveRef.current = false
+        onBrushStrokeStateChange(false)
+        if (strokeModifiedRef.current) {
+          syncMeshGeometry(true)
+          strokeModifiedRef.current = false
+          onSculptHistoryChange(undoStackRef.current.length, redoStackRef.current.length)
+        }
+      }
+    }
+    window.addEventListener('pointerup', handleGlobalPointerUp)
+    return () => window.removeEventListener('pointerup', handleGlobalPointerUp)
+  }, [onBrushStrokeStateChange, onSculptHistoryChange, syncMeshGeometry])
+
+  const performBrushAtIntersection = (e: ThreeEvent<PointerEvent>) => {
+    const hitMesh = e.object as THREE.Mesh
+    const topology: WeldedTopology | undefined = hitMesh.userData.weldedTopology
+    const sculptOffsets: Float32Array | undefined = hitMesh.userData.sculptOffsets
+    const posAttr = hitMesh.geometry?.attributes?.position as THREE.BufferAttribute | undefined
+    if (!topology || !sculptOffsets || !posAttr) return
+
+    const localPoint = hitMesh.worldToLocal(e.point.clone())
+    const worldScale = hitMesh.getWorldScale(new THREE.Vector3()).x || 1
+    const localRadius = state.brush.radius / worldScale
+
+    const changed = applyBrushDab({
+      topology,
+      currentPositions: posAttr.array as Float32Array,
+      sculptOffsets,
+      localHitPoint: localPoint,
+      localRadius,
+      settings: state.brush,
+    })
+
+    if (changed) {
+      strokeModifiedRef.current = true
+      dabCounterRef.current += 1
+      // Recompute normals every 4th dab during drag for responsive shading without frame drops
+      syncMeshGeometry(dabCounterRef.current % 4 === 0)
+    }
+  }
+
+  const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
+    if (
+      state.activeTool === 'sculpt' &&
+      state.brush.enabled &&
+      e.button === 0
+    ) {
+      e.stopPropagation()
+      const mainMesh = bodyMeshes[0]
+      if (mainMesh && mainMesh.userData.sculptOffsets) {
+        undoStackRef.current.push(
+          new Float32Array(mainMesh.userData.sculptOffsets)
+        )
+        if (undoStackRef.current.length > 30) {
+          undoStackRef.current.shift()
+        }
+        redoStackRef.current = []
+      }
+      isStrokeActiveRef.current = true
+      strokeModifiedRef.current = false
+      dabCounterRef.current = 0
+      onBrushStrokeStateChange(true)
+      performBrushAtIntersection(e)
+      return
+    }
+    onPointerDownCharacter(e)
+  }
+
+  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
+    if (state.activeTool !== 'sculpt' || !state.brush.enabled) return
+    e.stopPropagation()
+
+    if (e.face) {
+      const worldNormal = e.face.normal
+        .clone()
+        .transformDirection(e.object.matrixWorld)
+        .normalize()
+      onBrushHoverChange({
+        visible: true,
+        point: e.point.clone(),
+        normal: worldNormal,
+      })
+    }
+
+    if (isStrokeActiveRef.current) {
+      performBrushAtIntersection(e)
+    }
+  }
+
+  const handlePointerLeave = () => {
+    if (state.activeTool === 'sculpt') {
+      onBrushHoverChange(null)
+    }
+  }
 
   return (
     <primitive
       object={clonedScene}
-      onPointerDown={onPointerDownCharacter}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerOut={handlePointerLeave}
     />
+  )
+}
+
+/** 3D Brush Ring Cursor aligned to the character surface normal */
+function BrushCursorIndicator({
+  hover,
+  radius,
+  mode,
+  symmetryX,
+}: {
+  hover: BrushHoverState | null
+  radius: number
+  mode: AppState['brush']['mode']
+  symmetryX: boolean
+}) {
+  if (!hover || !hover.visible) return null
+
+  const color =
+    mode === 'inflate' ? '#4ade80' : mode === 'deflate' ? '#fb923c' : '#38bdf8'
+
+  const quat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1),
+    hover.normal
+  )
+  const pos = hover.point.clone().addScaledVector(hover.normal, 0.003)
+
+  const mirrorNormal = new THREE.Vector3(
+    -hover.normal.x,
+    hover.normal.y,
+    hover.normal.z
+  ).normalize()
+  const mirrorQuat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1),
+    mirrorNormal
+  )
+  const mirrorPos = new THREE.Vector3(
+    -hover.point.x,
+    hover.point.y,
+    hover.point.z
+  ).addScaledVector(mirrorNormal, 0.003)
+
+  return (
+    <group>
+      <mesh position={pos} quaternion={quat}>
+        <ringGeometry args={[radius * 0.86, radius, 48]} />
+        <meshBasicMaterial
+          color={color}
+          side={THREE.DoubleSide}
+          transparent
+          opacity={0.9}
+          depthTest={false}
+        />
+      </mesh>
+      <mesh position={pos} quaternion={quat}>
+        <ringGeometry args={[0.003, 0.01, 24]} />
+        <meshBasicMaterial
+          color={color}
+          side={THREE.DoubleSide}
+          transparent
+          opacity={0.95}
+          depthTest={false}
+        />
+      </mesh>
+
+      {symmetryX && Math.abs(hover.point.x) > 0.015 && (
+        <mesh position={mirrorPos} quaternion={mirrorQuat}>
+          <ringGeometry args={[radius * 0.88, radius, 48]} />
+          <meshBasicMaterial
+            color={color}
+            side={THREE.DoubleSide}
+            transparent
+            opacity={0.45}
+            depthTest={false}
+          />
+        </mesh>
+      )}
+    </group>
   )
 }
 
@@ -422,11 +746,13 @@ function CameraRig({
   trigger,
   autoRotate,
   characterHeight,
+  disabled,
 }: {
   preset: CameraPreset
   trigger: number
   autoRotate: boolean
   characterHeight: number
+  disabled: boolean
 }) {
   const controlsRef = useRef<OrbitControlsImpl>(null)
   const { camera } = useThree()
@@ -444,6 +770,7 @@ function CameraRig({
     <OrbitControls
       ref={controlsRef}
       makeDefault
+      enabled={!disabled}
       target={[0, Math.max(1.2, characterHeight) * 0.52, 0]}
       minDistance={0.22}
       maxDistance={12}
@@ -454,7 +781,7 @@ function CameraRig({
       rotateSpeed={0.75}
       zoomSpeed={1.0}
       panSpeed={0.65}
-      autoRotate={autoRotate}
+      autoRotate={autoRotate && !disabled}
       autoRotateSpeed={1.8}
     />
   )
@@ -476,7 +803,6 @@ function FloorGrid({
           <gridHelper args={[10, 5, '#4b4b72', '#4b4b72']} position={[0, 0.002, 0]} />
         </>
       )}
-      {/* Invisible floor plane to capture clicks for deselecting or floor measurement */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, 0, 0]}
@@ -541,13 +867,11 @@ function MeasurementOverlay({
 
   return (
     <group>
-      {/* Point A Marker */}
       <mesh position={pointA}>
         <sphereGeometry args={[0.018, 20, 20]} />
         <meshBasicMaterial color="#4ade80" depthTest={false} />
       </mesh>
 
-      {/* Point B Marker and Line */}
       {pointB && (
         <>
           <mesh position={pointB}>
@@ -590,10 +914,17 @@ export default function Viewport({
   onModelLoaded,
   onSelectCharacter,
   onUpdateTransform,
+  onSculptHistoryChange,
+  onUndoSculpt,
+  onRedoSculpt,
+  onResetSculpt,
   onAddMeasurePoint,
   onClearMeasurement,
 }: ViewportProps) {
   const transformGroupRef = useRef<THREE.Group>(null)
+  const [isBrushStrokeActive, setIsBrushStrokeActive] = useState(false)
+  const [brushHover, setBrushHover] = useState<BrushHoverState | null>(null)
+
   const isTransformTool =
     state.activeTool === 'move' ||
     state.activeTool === 'rotate' ||
@@ -606,7 +937,13 @@ export default function Viewport({
       ? 'rotate'
       : 'scale'
 
-  // Sync state.transform -> group transform
+  useEffect(() => {
+    if (state.activeTool !== 'sculpt') {
+      setBrushHover(null)
+      setIsBrushStrokeActive(false)
+    }
+  }, [state.activeTool])
+
   useEffect(() => {
     const grp = transformGroupRef.current
     if (!grp) return
@@ -686,10 +1023,20 @@ export default function Viewport({
     }
   }
 
+  const brushModeLabel =
+    state.brush.mode === 'inflate'
+      ? 'Aumentar Volume (+)'
+      : state.brush.mode === 'deflate'
+      ? 'Reduzir Volume (−)'
+      : 'Suavizar Superfície'
+
   return (
     <main
       className={`viewport ${
-        state.activeTool === 'measure' ? 'viewport--crosshair' : ''
+        state.activeTool === 'measure' ||
+        (state.activeTool === 'sculpt' && state.brush.enabled)
+          ? 'viewport--crosshair'
+          : ''
       }`}
       aria-label="Viewport 3D"
     >
@@ -708,7 +1055,44 @@ export default function Viewport({
         ))}
       </div>
 
-      {/* Active Tool Banner when using Measure or Transform */}
+      {/* Active Tool Banner for Body Sculpting Mode */}
+      {state.activeTool === 'sculpt' && (
+        <div className="viewport__tool-banner">
+          <span>
+            🖌 <strong>Modo de Edição Corporal:</strong>{' '}
+            {state.brush.enabled
+              ? `Arraste sobre o corpo para ${brushModeLabel}`
+              : 'Use os controles deslizantes laterais'}
+          </span>
+          <button
+            className="viewport__banner-btn"
+            onClick={onUndoSculpt}
+            disabled={state.sculptHistory.undoSteps === 0}
+            title="Desfazer traço do pincel (Ctrl+Z)"
+          >
+            ↶ Desfazer ({state.sculptHistory.undoSteps})
+          </button>
+          <button
+            className="viewport__banner-btn"
+            onClick={onRedoSculpt}
+            disabled={state.sculptHistory.redoSteps === 0}
+            title="Refazer traço do pincel (Ctrl+Y)"
+          >
+            ↷ Refazer ({state.sculptHistory.redoSteps})
+          </button>
+          {state.sculptHistory.undoSteps > 0 && (
+            <button
+              className="viewport__banner-btn viewport__banner-btn--secondary"
+              onClick={onResetSculpt}
+              title="Limpar todas as deformações feitas com o pincel"
+            >
+              Limpar Pincel
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Active Tool Banner for Measurement Mode */}
       {state.activeTool === 'measure' && (
         <div className="viewport__tool-banner">
           <span>
@@ -794,10 +1178,23 @@ export default function Viewport({
             <CharacterMesh
               state={state}
               onModelLoaded={onModelLoaded}
+              onSculptHistoryChange={onSculptHistoryChange}
+              onBrushStrokeStateChange={setIsBrushStrokeActive}
+              onBrushHoverChange={setBrushHover}
               onPointerDownCharacter={handlePointerDownCharacter}
             />
           </Suspense>
         </group>
+
+        {/* 3D Surface Brush Ring Indicator */}
+        {state.activeTool === 'sculpt' && state.brush.enabled && (
+          <BrushCursorIndicator
+            hover={brushHover}
+            radius={state.brush.radius}
+            mode={state.brush.mode}
+            symmetryX={state.brush.symmetryX}
+          />
+        )}
 
         {/* Interactive 3D Gizmo for Move / Rotate / Scale */}
         {isTransformTool && state.isSelected && transformGroupRef.current && (
@@ -821,20 +1218,37 @@ export default function Viewport({
           trigger={state.cameraTrigger}
           autoRotate={state.autoRotate}
           characterHeight={state.metrics.height}
+          disabled={isBrushStrokeActive}
         />
       </Canvas>
 
       {/* Bottom Controls Hint Overlay */}
       <div className="viewport__overlay">
-        <span className="viewport__hint">
-          <span className="viewport__hint-key">Arrastar</span> Girar Câmera
-        </span>
-        <span className="viewport__hint">
-          <span className="viewport__hint-key">Botão Direito</span> Mover Vista
-        </span>
-        <span className="viewport__hint">
-          <span className="viewport__hint-key">Scroll</span> Zoom
-        </span>
+        {state.activeTool === 'sculpt' && state.brush.enabled ? (
+          <>
+            <span className="viewport__hint">
+              <span className="viewport__hint-key">Arrastar no Corpo</span> Esculpir Região
+            </span>
+            <span className="viewport__hint">
+              <span className="viewport__hint-key">Arrastar no Fundo</span> Girar Câmera
+            </span>
+            <span className="viewport__hint">
+              <span className="viewport__hint-key">Ctrl+Z</span> Desfazer
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="viewport__hint">
+              <span className="viewport__hint-key">Arrastar</span> Girar Câmera
+            </span>
+            <span className="viewport__hint">
+              <span className="viewport__hint-key">Botão Direito</span> Mover Vista
+            </span>
+            <span className="viewport__hint">
+              <span className="viewport__hint-key">Scroll</span> Zoom
+            </span>
+          </>
+        )}
       </div>
     </main>
   )

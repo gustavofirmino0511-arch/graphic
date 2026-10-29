@@ -1,8 +1,11 @@
+import type { ToolId } from '../App'
 import { CHARACTER_STYLES, type CharacterStyleId } from '../config/characterStyles'
 
 interface HeaderProps {
   styleId: CharacterStyleId
+  activeTool: ToolId
   onSelectStyle: (styleId: CharacterStyleId) => void
+  onSelectTool: (tool: ToolId) => void
   onResetCamera: () => void
   autoRotate: boolean
   onToggleAutoRotate: () => void
@@ -10,11 +13,15 @@ interface HeaderProps {
 
 export default function Header({
   styleId,
+  activeTool,
   onSelectStyle,
+  onSelectTool,
   onResetCamera,
   autoRotate,
   onToggleAutoRotate,
 }: HeaderProps) {
+  const isBodyEditMode = activeTool === 'sculpt'
+
   return (
     <header className="header">
       <div className="header__brand">
@@ -46,6 +53,26 @@ export default function Header({
       </div>
 
       <div className="header__actions">
+        <button
+          className={`header__btn ${isBodyEditMode ? 'header__btn--active' : ''}`}
+          onClick={() => onSelectTool(isBodyEditMode ? 'select' : 'sculpt')}
+          title="Alternar Modo de Edição Corporal e Pincel 3D (Atalho: B)"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          >
+            <path d="M12 19l7-7 3 3-7 7-3-3z" />
+            <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+          </svg>
+          <span>{isBodyEditMode ? 'Editando Corpo (Ativo)' : 'Editar Corpo'}</span>
+        </button>
+
         <button
           className={`header__btn ${autoRotate ? 'header__btn--active' : ''}`}
           onClick={onToggleAutoRotate}

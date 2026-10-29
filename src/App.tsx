@@ -5,6 +5,12 @@ import Viewport from './components/Viewport'
 import PropertiesPanel from './components/PropertiesPanel'
 import StatusBar from './components/StatusBar'
 import { CHARACTER_STYLES, type CharacterStyleId } from './config/characterStyles'
+import {
+  BODY_PRESETS,
+  type BodyPresetId,
+  type BrushSettings,
+  type ExtendedBodyProportions,
+} from './systems/bodyEditorSystem'
 
 export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'sculpt' | 'measure'
 
@@ -34,18 +40,19 @@ export interface TransformState {
   uniformScale: boolean
 }
 
-export interface BodyProportions {
-  heightMeters: number
-  shoulderWidth: number // -1 to 1
-  torsoWidth: number // -1 to 1
-  armLength: number // -1 to 1
-  legLength: number // -1 to 1
-  muscleTone: number // 0 to 1
-}
+export type BodyProportions = ExtendedBodyProportions
 
 export interface MeasurementState {
   pointA: [number, number, number] | null
   pointB: [number, number, number] | null
+}
+
+export interface SculptHistoryMeta {
+  undoSteps: number
+  redoSteps: number
+  undoTrigger: number
+  redoTrigger: number
+  resetSculptTrigger: number
 }
 
 export interface AppState {
@@ -64,6 +71,8 @@ export interface AppState {
   metrics: ModelMetrics
   transform: TransformState
   proportions: BodyProportions
+  brush: BrushSettings
+  sculptHistory: SculptHistoryMeta
   measurement: MeasurementState
 }
 
@@ -74,13 +83,19 @@ const DEFAULT_TRANSFORM: TransformState = {
   uniformScale: true,
 }
 
+const DEFAULT_BRUSH: BrushSettings = {
+  enabled: true,
+  mode: 'inflate',
+  radius: 0.11,
+  strength: 0.45,
+  symmetryX: true,
+  protectExtremities: true,
+}
+
 function getDefaultProportions(styleId: CharacterStyleId): BodyProportions {
   return {
     heightMeters: CHARACTER_STYLES[styleId].defaultHeightMeters,
-    shoulderWidth: 0,
-    torsoWidth: 0,
-    armLength: 0,
-    legLength: 0,
+    ...BODY_PRESETS.default.values,
     muscleTone: styleId === 'realistic' ? 0.25 : 0,
   }
 }
@@ -110,6 +125,14 @@ export default function App() {
     },
     transform: DEFAULT_TRANSFORM,
     proportions: getDefaultProportions('realistic'),
+    brush: DEFAULT_BRUSH,
+    sculptHistory: {
+      undoSteps: 0,
+      redoSteps: 0,
+      undoTrigger: 0,
+      redoTrigger: 0,
+      resetSculptTrigger: 0,
+    },
     measurement: {
       pointA: null,
       pointB: null,
@@ -120,7 +143,10 @@ export default function App() {
     setState((s) => ({
       ...s,
       activeTool: tool,
-      isSelected: tool === 'move' || tool === 'rotate' || tool === 'scale' ? true : s.isSelected,
+      isSelected:
+        tool === 'move' || tool === 'rotate' || tool === 'scale' || tool === 'sculpt'
+          ? true
+          : s.isSelected,
     }))
   }, [])
 
@@ -138,6 +164,13 @@ export default function App() {
       eyeColor: cfg.eyeIrisColor,
       proportions: getDefaultProportions(styleId),
       transform: DEFAULT_TRANSFORM,
+      sculptHistory: {
+        undoSteps: 0,
+        redoSteps: 0,
+        undoTrigger: 0,
+        redoTrigger: 0,
+        resetSculptTrigger: s.sculptHistory.resetSculptTrigger + 1,
+      },
     }))
   }, [])
 
@@ -202,10 +235,77 @@ export default function App() {
     }))
   }, [])
 
+  const applyBodyPreset = useCallback((presetId: BodyPresetId) => {
+    const preset = BODY_PRESETS[presetId]
+    setState((s) => ({
+      ...s,
+      proportions: {
+        ...s.proportions,
+        ...preset.values,
+      },
+    }))
+  }, [])
+
   const resetProportions = useCallback(() => {
     setState((s) => ({
       ...s,
       proportions: getDefaultProportions(s.styleId),
+    }))
+  }, [])
+
+  const updateBrush = useCallback((partial: Partial<BrushSettings>) => {
+    setState((s) => ({
+      ...s,
+      brush: { ...s.brush, ...partial },
+    }))
+  }, [])
+
+  const onSculptHistoryChange = useCallback((undoSteps: number, redoSteps: number) => {
+    setState((s) => ({
+      ...s,
+      sculptHistory: {
+        ...s.sculptHistory,
+        undoSteps,
+        redoSteps,
+      },
+    }))
+  }, [])
+
+  const triggerUndoSculpt = useCallback(() => {
+    setState((s) => {
+      if (s.sculptHistory.undoSteps <= 0) return s
+      return {
+        ...s,
+        sculptHistory: {
+          ...s.sculptHistory,
+          undoTrigger: s.sculptHistory.undoTrigger + 1,
+        },
+      }
+    })
+  }, [])
+
+  const triggerRedoSculpt = useCallback(() => {
+    setState((s) => {
+      if (s.sculptHistory.redoSteps <= 0) return s
+      return {
+        ...s,
+        sculptHistory: {
+          ...s.sculptHistory,
+          redoTrigger: s.sculptHistory.redoTrigger + 1,
+        },
+      }
+    })
+  }, [])
+
+  const triggerResetSculpt = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      sculptHistory: {
+        ...s.sculptHistory,
+        undoSteps: 0,
+        redoSteps: 0,
+        resetSculptTrigger: s.sculptHistory.resetSculptTrigger + 1,
+      },
     }))
   }, [])
 
@@ -231,11 +331,24 @@ export default function App() {
     }))
   }, [])
 
-  // Global keyboard shortcuts (Q, W, E, R, B, M)
+  // Global keyboard shortcuts (Q, W, E, R, B, M, Ctrl+Z, Ctrl+Y)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) triggerRedoSculpt()
+        else triggerUndoSculpt()
+        return
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault()
+        triggerRedoSculpt()
+        return
+      }
+
       const key = e.key.toLowerCase()
       if (key === 'q') setTool('select')
       else if (key === 'w') setTool('move')
@@ -246,13 +359,15 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [setTool])
+  }, [setTool, triggerUndoSculpt, triggerRedoSculpt])
 
   return (
     <div className="app-layout">
       <Header
         styleId={state.styleId}
+        activeTool={state.activeTool}
         onSelectStyle={setStyleId}
+        onSelectTool={setTool}
         onResetCamera={() => selectCameraPreset('fullbody')}
         autoRotate={state.autoRotate}
         onToggleAutoRotate={toggleAutoRotate}
@@ -267,6 +382,10 @@ export default function App() {
           onModelLoaded={onModelLoaded}
           onSelectCharacter={setSelected}
           onUpdateTransform={updateTransform}
+          onSculptHistoryChange={onSculptHistoryChange}
+          onUndoSculpt={triggerUndoSculpt}
+          onRedoSculpt={triggerRedoSculpt}
+          onResetSculpt={triggerResetSculpt}
           onAddMeasurePoint={addMeasurePoint}
           onClearMeasurement={clearMeasurement}
         />
@@ -286,7 +405,12 @@ export default function App() {
           onUpdateTransform={updateTransform}
           onResetTransform={resetTransform}
           onUpdateProportions={updateProportions}
+          onApplyBodyPreset={applyBodyPreset}
           onResetProportions={resetProportions}
+          onUpdateBrush={updateBrush}
+          onUndoSculpt={triggerUndoSculpt}
+          onRedoSculpt={triggerRedoSculpt}
+          onResetSculpt={triggerResetSculpt}
           onClearMeasurement={clearMeasurement}
         />
       </div>

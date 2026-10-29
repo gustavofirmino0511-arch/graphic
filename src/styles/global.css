@@ -747,12 +747,24 @@ button {
 }
 
 .viewport__banner-btn {
-  padding: 3px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
   background: var(--cf-accent);
   color: white;
   font-size: 10.5px;
   font-weight: 600;
+  transition: opacity var(--cf-transition), background var(--cf-transition);
+}
+
+.viewport__banner-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.viewport__banner-btn--secondary {
+  background: var(--cf-bg-tertiary);
+  border: 1px solid var(--cf-border);
+  color: var(--cf-text-secondary);
 }
 
 .viewport__measure-badge {
