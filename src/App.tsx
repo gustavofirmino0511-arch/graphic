@@ -9,16 +9,23 @@ import {
   BODY_PRESETS,
   DEFAULT_FACIAL_PROPORTIONS,
   FACE_PRESETS,
+  GENERAL_CHARACTER_PRESETS,
+  computeProportionsFromBodyMass,
   type BodyPresetId,
   type BrushSettings,
   type ExtendedBodyProportions,
   type FacePresetId,
   type FacialProportions,
+  type GeneralPresetId,
 } from './systems/bodyEditorSystem'
 import {
   DEFAULT_JOINT_POSE,
   type JointPoseState,
 } from './systems/skeletonSystem'
+import type {
+  PerformanceQuality,
+  SkeletonDisplayMode,
+} from './systems/anatomicalSkeletonSystem'
 
 export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'sculpt' | 'measure'
 
@@ -79,9 +86,13 @@ export interface AppState {
   modelLoaded: boolean
   metrics: ModelMetrics
   transform: TransformState
+  bodyMass: number // -1 (extreme skeletal emaciation) to +1 (heavy/fat)
   proportions: BodyProportions
   faceProportions: FacialProportions
   jointPose: JointPoseState
+  skeletonDisplayMode: SkeletonDisplayMode
+  skeletonOpacity: number
+  performanceQuality: PerformanceQuality
   brush: BrushSettings
   sculptHistory: SculptHistoryMeta
   measurement: MeasurementState
@@ -116,7 +127,7 @@ function getDefaultProportions(styleId: CharacterStyleId): BodyProportions {
 export default function App() {
   const [state, setState] = useState<AppState>({
     styleId: 'realistic',
-    activeTool: 'select',
+    activeTool: 'sculpt',
     isSelected: true,
     panelOpen: true,
     wireframe: false,
@@ -138,9 +149,13 @@ export default function App() {
       depth: 0.46,
     },
     transform: DEFAULT_TRANSFORM,
+    bodyMass: 0,
     proportions: getDefaultProportions('realistic'),
     faceProportions: DEFAULT_FACIAL_PROPORTIONS,
     jointPose: DEFAULT_JOINT_POSE,
+    skeletonDisplayMode: 'auto',
+    skeletonOpacity: 0.88,
+    performanceQuality: 'balanced',
     brush: DEFAULT_BRUSH,
     sculptHistory: {
       undoSteps: 0,
@@ -178,6 +193,7 @@ export default function App() {
       modelLoaded: false,
       materialColor: cfg.defaultSkinColor,
       eyeColor: cfg.eyeIrisColor,
+      bodyMass: 0,
       proportions: getDefaultProportions(styleId),
       faceProportions: DEFAULT_FACIAL_PROPORTIONS,
       jointPose: {
@@ -270,8 +286,49 @@ export default function App() {
   const resetProportions = useCallback(() => {
     setState((s) => ({
       ...s,
+      bodyMass: 0,
       proportions: getDefaultProportions(s.styleId),
     }))
+  }, [])
+
+  const applyGeneralPreset = useCallback((presetId: GeneralPresetId) => {
+    const preset = GENERAL_CHARACTER_PRESETS[presetId]
+    if (!preset) return
+    setState((s) => ({
+      ...s,
+      bodyMass: preset.bodyMass,
+      proportions: {
+        ...s.proportions,
+        ...preset.body,
+      },
+      faceProportions: {
+        ...preset.face,
+      },
+    }))
+  }, [])
+
+  const updateBodyMass = useCallback((bodyMass: number) => {
+    setState((s) => {
+      const computed = computeProportionsFromBodyMass(bodyMass, s.proportions.heightMeters)
+      return {
+        ...s,
+        bodyMass,
+        proportions: computed.body,
+        faceProportions: computed.face,
+      }
+    })
+  }, [])
+
+  const setSkeletonDisplayMode = useCallback((skeletonDisplayMode: SkeletonDisplayMode) => {
+    setState((s) => ({ ...s, skeletonDisplayMode }))
+  }, [])
+
+  const setSkeletonOpacity = useCallback((skeletonOpacity: number) => {
+    setState((s) => ({ ...s, skeletonOpacity }))
+  }, [])
+
+  const setPerformanceQuality = useCallback((performanceQuality: PerformanceQuality) => {
+    setState((s) => ({ ...s, performanceQuality }))
   }, [])
 
   const updateFaceProportions = useCallback((partial: Partial<FacialProportions>) => {
@@ -443,6 +500,8 @@ export default function App() {
           onModelLoaded={onModelLoaded}
           onSelectCharacter={setSelected}
           onUpdateTransform={updateTransform}
+          onUpdateBrush={updateBrush}
+          onSetSkeletonDisplayMode={setSkeletonDisplayMode}
           onSculptHistoryChange={onSculptHistoryChange}
           onUndoSculpt={triggerUndoSculpt}
           onRedoSculpt={triggerRedoSculpt}
@@ -465,6 +524,8 @@ export default function App() {
           onSelectEyeColor={setEyeColor}
           onUpdateTransform={updateTransform}
           onResetTransform={resetTransform}
+          onApplyGeneralPreset={applyGeneralPreset}
+          onUpdateBodyMass={updateBodyMass}
           onUpdateProportions={updateProportions}
           onApplyBodyPreset={applyBodyPreset}
           onResetProportions={resetProportions}
@@ -473,6 +534,9 @@ export default function App() {
           onResetFaceProportions={resetFaceProportions}
           onUpdateJointPose={updateJointPose}
           onResetJointPose={resetJointPose}
+          onSetSkeletonDisplayMode={setSkeletonDisplayMode}
+          onSetSkeletonOpacity={setSkeletonOpacity}
+          onSetPerformanceQuality={setPerformanceQuality}
           onUpdateBrush={updateBrush}
           onUndoSculpt={triggerUndoSculpt}
           onRedoSculpt={triggerRedoSculpt}
